@@ -358,7 +358,7 @@ static void __init omap4_smp_prepare_cpus(unsigned int max_cpus)
 
 	if (soc_is_omap443x())
 		c = &omap443x_cfg;
-	else if (soc_is_omap446x())
+	else if (soc_is_omap446x() || soc_is_omap447x())
 		c = &omap446x_cfg;
 	else if (soc_is_dra74x() || soc_is_omap54xx() || soc_is_dra76x())
 		c = &omap5_cfg;

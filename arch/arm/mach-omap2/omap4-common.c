@@ -309,7 +309,7 @@ void __init omap_gic_of_init(void)
 	}
 
 	/* Extract GIC distributor and TWD bases for OMAP4460 ROM Errata WA */
-	if (!cpu_is_omap446x())
+	if (!cpu_is_omap446x() && !soc_is_omap447x())
 		goto skip_errata_init;
 
 	np = of_find_compatible_node(NULL, NULL, "arm,cortex-a9-gic");
