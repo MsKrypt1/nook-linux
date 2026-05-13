@@ -1,0 +1,691 @@
+// SPDX-License-Identifier: GPL-2.0-only
+/*
+ * Device Tree Source for Barnes & Noble Nook HD+ OMAP4470 Tablet
+ */
+/dts-v1/;
+
+#include <dt-bindings/input/input.h>
+#include "omap4470.dtsi"
+
+/ {
+	model = "Barnes & Noble Nook HD+ (Ovation)";
+	compatible = "barnesnoble,ovation", "ti,omap4470", "ti,omap4";
+
+	chosen {
+		bootargs = "console=ttyS0,115200n8 earlyprintk root=/dev/ram0 rw init=/init ignore_loglevel initrd=0x82000000,6323720";
+		stdout-path = &uart1;
+	};
+
+	memory@80000000 {
+		device_type = "memory";
+		reg = <0x80000000 0x40000000>; /* 1GB RAM */
+	};
+
+	/* WLAN VSys Regulator */
+	vsys_wlan: vsys-wlan {
+		pinctrl-names = "default";
+		pinctrl-0 = <&wlan_vbat_gpio_pins>;
+		compatible = "regulator-fixed";
+		regulator-name = "vsys-wlan";
+		regulator-min-microvolt = <3875000>;
+		regulator-max-microvolt = <3875000>;
+		gpio = <&gpio4 18 0>;
+		startup-delay-us = <200>;
+		enable-active-high;
+		regulator-boot-on;
+		regulator-always-on;
+	};
+
+	/* WLAN Core Voltage Regulator */
+	vwl1271: vwl1271 {
+		pinctrl-names = "default";
+		pinctrl-0 = <&wl12xx_gpio_pins>;
+		compatible = "regulator-fixed";
+		regulator-name = "vwl1271";
+		regulator-min-microvolt = <1800000>;
+		regulator-max-microvolt = <1800000>;
+		startup-delay-us = <70000>;
+		vin-supply = <&vsys_wlan>;
+		gpio = <&gpio4 19 0>;
+		enable-active-high;
+	};
+
+	/* WLAN Power Sequence */
+	wl12xx_pwrseq: wl12xx-pwrseq {
+		compatible = "mmc-pwrseq-simple";
+		clocks = <&twl6032 0x00>;
+		clock-names = "ext_clock";
+		post-power-on-delay-ms = <100>;
+	};
+
+	/* LCD Touch Panel Power Regulator */
+	reg_i2c_bl: regulator-i2c-backlight {
+		compatible = "regulator-fixed";
+		regulator-name = "reg_i2c_bl";
+		regulator-min-microvolt = <1800000>;
+		regulator-max-microvolt = <1800000>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&reg_i2c_bl_pins>;
+		gpio = <&gpio2 6 0>;
+		enable-active-high;
+	};
+
+	/* LCD Display Voltage Regulator */
+	vdd_lcdtp: vdd-lcdtp {
+		compatible = "regulator-fixed";
+		regulator-name = "vdd_lcdtp";
+		regulator-min-microvolt = <3300000>;
+		regulator-max-microvolt = <3300000>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&reg_vdd_lcdtp_pins>;
+		gpio = <&gpio2 4 0>;
+		enable-active-high;
+		regulator-boot-on;
+		regulator-always-on;
+	};
+
+	/* TWL6032 PMIC I2C Pullup Configuration */
+	i2c3_pullup: i2c3-pullup {
+		compatible = "ti,omap4-i2c-pullup";
+		syscon = <&omap4_padconf_global>;
+		i2c-bus-id = <3>;
+		pullups-disabled;
+	};
+};
+
+&gpio1 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&gpio1_hog_wkup_pins>;
+	ti,no-reset-on-init;
+
+	twl-ext-fet-disable-hog {
+		gpio-hog;
+		gpios = <4 GPIO_ACTIVE_HIGH>;
+		output-low;
+		line-name = "EXT-FET-EN";
+	};
+};
+
+&gpio2 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&gpio2_hog_pins>;
+	ti,no-reset-on-init;
+
+	LS_DCDC_EN {
+		gpio-hog;
+		gpios = <0x1c GPIO_ACTIVE_HIGH>;
+		output-high;
+		line-name = "LS_DCDC_EN";
+	};
+};
+
+&gpio3 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&gpio3_hog_pins>;
+	ti,no-reset-on-init;
+
+	LS_OE {
+		gpio-hog;
+		gpios = <0x11 GPIO_ACTIVE_HIGH>;
+		output-high;
+		line-name = "LS_OE";
+	};
+};
+
+&gpio5 {
+	ti,no-reset-on-init;
+};
+
+&omap4_pmx_wkup {
+	gpio1_hog_wkup_pins: gpio1-hog-wkup-pins {
+		pinctrl-single,pins = <0x08 0x03>;
+	};
+
+	twl6030_wkup_pins: twl6030-wkup-pins {
+		pinctrl-single,pins = <0x14 0x02>;
+	};
+};
+
+&omap4_pmx_core {
+	pinctrl-names = "default";
+
+	/* GPIO2 Hog - GPIO LED/Status */
+	gpio2_hog_pins: gpio2-hog-pins {
+		pinctrl-single,pins = <0x48 0x03>;
+	};
+
+	/* GPIO3 Hog */
+	gpio3_hog_pins: gpio3-hog-pins {
+		pinctrl-single,pins = <0x7c 0x03>;
+	};
+
+	/* UART1 Pins */
+	pinmux_uart1_pins: pinmux-uart1-pins {
+		pinctrl-single,pins = <0xe6 0x101 0xe8 0x01>;
+	};
+
+	/* UART4 Pins */
+	uart4_pins: uart4-pins {
+		pinctrl-single,pins = <0xd0 0x11d 0xd2 0x05 0x11c 0x100 0x11e 0x00>;
+	};
+
+	/* Bluetooth Pins */
+	bt_pins: bt-pins {
+		pinctrl-single,pins = <0x80 0x03>;
+	};
+
+	/* MMC1 SD Card */
+	mmc1_pins: mmc1-pins {
+		pinctrl-single,pins = <
+			0xa2 0x118
+			0xa4 0x118
+			0xa6 0x118
+			0xa8 0x118
+			0xaa 0x118
+			0xac 0x118
+		>;
+	};
+
+	/* MMC2 eMMC */
+	mmc2_pins: mmc2-pins {
+		pinctrl-single,pins = <
+			0x00 0x119
+			0x02 0x119
+			0x04 0x119
+			0x06 0x119
+			0x08 0x119
+			0x0a 0x119
+			0x0c 0x119
+			0x0e 0x119
+			0x42 0x119
+			0x44 0x119
+		>;
+	};
+
+	/* I2C1 for Touchscreen/Other */
+	i2c1_pins: i2c1-pins {
+		pinctrl-single,pins = <0xe2 0x118 0xe4 0x118>;
+	};
+
+	/* TWL Audio Pins */
+	twl_audio_pins: twl-audio-pins {
+		pinctrl-single,pins = <0xba 0x03>;
+	};
+
+	/* Accelerometer (KXTF9) */
+	kxtf9_pins: kxtf9-pins {
+		pinctrl-single,pins = <0x116 0x103>;
+	};
+
+	/* I2C3 for PMIC */
+	i2c3_pins: i2c3-pins {
+		pinctrl-single,pins = <0xea 0x118 0xec 0x118>;
+	};
+
+	/* DSI1 Pins */
+	dsi1_pins: dsi1-pins {
+		pinctrl-single,pins = <0x108 0x03 0x18e 0x03>;
+	};
+
+	/* Touchscreen Panel (FT5x06) */
+	ft5x06_pins: ft5x06-pins {
+		pinctrl-single,pins = <0x1a 0x103 0x1e 0x03>;
+	};
+
+	/* I2C Backlight Enable */
+	reg_i2c_bl_pins: reg-i2c-bl-pins {
+		pinctrl-single,pins = <0x1c 0x03>;
+	};
+
+	/* VDD LCDTP Enable */
+	reg_vdd_lcdtp_pins: reg-vdd-lcdtp-pins {
+		pinctrl-single,pins = <0x18 0x03>;
+	};
+
+	/* MMC3 WIFI */
+	mmc3_pins: mmc3-pins {
+		pinctrl-single,pins = <
+			0xd8 0x119
+			0xda 0x119
+			0xdc 0x119
+			0xde 0x119
+			0xc2 0x119
+			0xc4 0x119
+		>;
+	};
+
+	/* WL1271 WIFI Ready */
+	wl1271_pins: wl1271-pins {
+		pinctrl-single,pins = <0x10e 0x103>;
+	};
+
+	/* WLAN GPIO */
+	wl12xx_gpio_pins: wl12xx-gpio-pins {
+		pinctrl-single,pins = <0xc0 0x03>;
+	};
+
+	/* WLAN VBAT GPIO */
+	wlan_vbat_gpio_pins: wlan-vbat-gpio-pins {
+		pinctrl-single,pins = <0xbe 0x03>;
+	};
+
+	/* TWL6030 IRQ */
+	twl6030_pins: twl6030-pins {
+		pinctrl-single,pins = <0x15e 0x4118>;
+	};
+};
+
+/* I2C1 - Additional Sensors */
+&i2c1 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&i2c1_pins>;
+	clock-frequency = <400000>;
+
+	/* Accelerometer */
+	accelerometer: accelerometer@e {
+		compatible = "kionix,kxtf9";
+		reg = <0x0e>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&kxtf9_pins>;
+		interrupt-parent = <&gpio5>;
+		interrupts = <24 1>;
+	};
+
+	/* PMIC */
+	twl6032: twl@48 {
+		compatible = "ti,twl6032";
+		reg = <0x48>;
+		interrupts = <0 7 4>;
+		interrupt-controller;
+		#interrupt-cells = <1>;
+		system-power-controller;
+		#clock-cells = <1>;
+		#address-cells = <0x01>;
+		#size-cells = <0x00>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&twl6030_pins &twl6030_wkup_pins>;
+
+		rtc {
+			compatible = "ti,twl4030-rtc";
+			interrupts = <11>;
+		};
+	};
+
+	/* Battery Gauge */
+	bq27500@55 {
+		status = "okay";
+		compatible = "ti,bq27520g3";
+		reg = <0x55>;
+	};
+
+	/* Battery Charger */
+	charger@6b {
+		status = "okay";
+		compatible = "ti,bq24196";
+		reg = <0x6b>;
+		interrupt-parent = <&gpio5>;
+		interrupts = <14 2>;
+		omit-battery-class;
+		ti,system-minimum-microvolt = <3400000>;
+	};
+};
+
+&i2c2 {
+	status = "disabled";
+};
+
+/* I2C3 - PMIC and Sensors */
+&i2c3 {
+	status = "okay";
+	pinctrl-names = "default";
+	pinctrl-0 = <&i2c3_pins>;
+	clock-frequency = <400000>;
+
+	/* LCD Backlight Controller */
+	lcd_backlight: lcd-backlight@2c {
+		compatible = "ti,lp8556";
+		reg = <0x2c>;
+		enable-supply = <&reg_i2c_bl>;
+		power-supply = <&ldo3>;
+		pwms = <&pwm 0 144592>;
+		pwm-names = "lp8556";
+		dev-ctrl = [02];
+		init-brt = [3f];
+
+		rom-a4h {
+			rom-addr = [a4];
+			rom-val = [02];
+		};
+
+		rom-a5h {
+			rom-addr = [a5];
+			rom-val = [14];
+		};
+
+		rom-a6h {
+			rom-append;
+			rom-addr = [a6];
+			rom-val = [40];
+			rom-mask = [3f];
+		};
+
+		rom-a7h {
+			rom-addr = [a7];
+			rom-val = [fd];
+		};
+
+		rom-a9h {
+			rom-addr = [a9];
+			rom-val = [80];
+		};
+	};
+
+	/* Touchscreen Controller */
+	ft5x06: touchscreen@38 {
+		compatible = "edt,edt-ft5x06";
+		reg = <0x38>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&ft5x06_pins>;
+		iovcc-supply = <&ldo3>;
+		vcc-supply = <&vdd_lcdtp>;
+		interrupt-parent = <&gpio2>;
+		interrupts = <5 2>;
+		reset-gpios = <&gpio2 7 1>;
+		touchscreen-size-x = <1080>;
+		touchscreen-size-y = <1920>;
+		touchscreen-inverted-y;
+		touchscreen-swapped-x-y;
+	};
+};
+
+/* UART1 - Debug/Console */
+&uart1 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&pinmux_uart1_pins>;
+	status = "okay";
+};
+
+/* UART3 - Bluetooth */
+/*&uart3 {
+	status = "okay";
+	pinctrl-names = "default";
+	pinctrl-0 = <&uart3_pins>;
+};*/
+
+/* UART4 */
+&uart4 {
+	status = "okay";
+	pinctrl-names = "default";
+	pinctrl-0 = <&uart4_pins>;
+};
+
+/* MMC1 - SD Card Slot */
+&mmc1 {
+	status = "okay";
+	pinctrl-names = "default";
+	pinctrl-0 = <&mmc1_pins>;
+	vmmc-supply = <&ldo5>;
+	mmc-ddr-1_8v;
+	bus-width = <4>;
+	broken-cd;
+	no-sdio;
+	no-mmc;
+};
+
+/* MMC2 - eMMC Storage */
+&mmc2 {
+	status = "okay";
+	pinctrl-names = "default";
+	pinctrl-0 = <&mmc2_pins>;
+	vmmc-supply = <&ldo2>;
+	ti,non-removable;
+	cap-mmc-highspeed;
+	mmc-ddr-1_8v;
+	bus-width = <8>;
+	no-sd;
+	no-sdio;
+};
+
+/* MMC3 - WLAN Module */
+&mmc3 {
+	#address-cells = <0x01>;
+	#size-cells = <0x00>;
+	status = "okay";
+	pinctrl-names = "default";
+	pinctrl-0 = <&mmc3_pins>;
+	vmmc-supply = <&vwl1271>;
+	mmc-pwrseq = <&wl12xx_pwrseq>;
+	no-sd;
+	no-mmc;
+	non-removable;
+	cap-power-off-card;
+	keep-power-in-suspend;
+	bus-width = <4>;
+
+	wlcore: wlcore@2 {
+		compatible = "ti,wl1271";
+		reg = <2>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&wl1271_pins>;
+		interrupt-parent = <&gpio5>;
+		interrupts = <20 4>;
+		interrupt-names = "irq";
+		ref-clock-frequency = <38400000>;
+		tcxo-clock-frequency = <38400000>;
+	};
+};
+
+&mmc4 {
+	status = "disabled";
+};
+
+&i2c4 {
+	status = "disabled";
+};
+
+&twl6032 {
+	compatible = "ti,twl6032";
+	interrupts = <0 7 4>;
+	interrupt-controller;
+	#interrupt-cells = <1>;
+	system-power-controller;
+	#clock-cells = <1>;
+
+	/* LDO1 - 1.8V for MMC Card */
+	ldo1: regulator-ldo1 {
+		compatible = "ti,twl6032-ldo1";
+		// regulator-name = "ldo1";
+		regulator-min-microvolt = <1800000>;
+		regulator-max-microvolt = <2500000>;
+
+		regulator-state-mem {
+			regulator-off-in-suspend;
+		};
+	};
+
+	/* LDO2 - Variable voltage supply */
+	ldo2: regulator-ldo2 {
+		compatible = "ti,twl6032-ldo2";
+		// regulator-name = "ldo2";
+		regulator-min-microvolt = <1000000>;
+		regulator-max-microvolt = <3000000>;
+		regulator-always-on;
+
+		regulator-state-mem {
+			regulator-off-in-suspend;
+			regulator-ignore-initial-state;
+		};
+	};
+
+	/* LDO3 - 1.8V Fixed */
+	ldo3: regulator-ldo3 {
+		compatible = "ti,twl6032-ldo3";
+		// regulator-name = "ldo3";
+		regulator-min-microvolt = <1800000>;
+		regulator-max-microvolt = <1800000>;
+		regulator-initial-state = <0>;
+		regulator-boot-on;
+
+		regulator-state-mem {
+			regulator-off-in-suspend;
+			regulator-ignore-initial-state;
+		};
+	};
+
+	/* LDO4 - 1.8V for Sensor/Touch */
+	ldo4: regulator-ldo4 {
+		compatible = "ti,twl6032-ldo4";
+		// regulator-name = "ldo4";
+		regulator-min-microvolt = <1800000>;
+		regulator-max-microvolt = <1800000>;
+
+		regulator-state-mem {
+			regulator-off-in-suspend;
+			regulator-ignore-initial-state;
+		};
+	};
+
+	/* LDO5 - Variable voltage for sensors */
+	ldo5: regulator-ldo5 {
+		compatible = "ti,twl6032-ldo5";
+		// regulator-name = "ldo5";
+		regulator-min-microvolt = <1200000>;
+		regulator-max-microvolt = <3000000>;
+		regulator-boot-on;
+
+		regulator-state-mem {
+			regulator-off-in-suspend;
+			regulator-ignore-initial-state;
+		};
+	};
+
+	/* LDO6 - Core voltage */
+	ldo6: regulator-ldo6 {
+		compatible = "ti,twl6032-ldo6";
+		// regulator-name = "ldo6";
+		regulator-always-on;
+		regulator-initial-state = <0>;
+
+		regulator-state-mem {
+			regulator-off-in-suspend;
+			regulator-ignore-initial-state;
+		};
+	};
+
+	/* LDO7 - 1.8V Always On */
+	ldo7: regulator-ldo7 {
+		compatible = "ti,twl6032-ldo7";
+		// regulator-name = "ldo7";
+		regulator-min-microvolt = <1800000>;
+		regulator-max-microvolt = <1800000>;
+		regulator-always-on;
+		regulator-boot-on;
+		regulator-state-mem;
+	};
+
+	/* LDOLN - Core line */
+	ldoln: regulator-ldoln {
+		compatible = "ti,twl6032-ldoln";
+		// regulator-name = "ldoln";
+		regulator-always-on;
+
+		regulator-state-mem {
+			regulator-off-in-suspend;
+		};
+	};
+
+	/* LDOUSB - USB PHY supply */
+	ldousb: regulator-ldousb {
+		compatible = "ti,twl6032-ldousb";
+		// regulator-name = "ldousb";
+
+		regulator-state-mem {
+			regulator-off-in-suspend;
+		};
+	};
+
+	/* VANA - Analog supply */
+	vana: regulator-vana {
+		compatible = "ti,twl6030-vana";
+		// regulator-name = "vana";
+		regulator-always-on;
+
+		regulator-state-mem {
+			regulator-off-in-suspend;
+		};
+	};
+
+	/* USB Interface */
+	usb {
+		compatible = "ti,twl6030-usb";
+		interrupts = <4 10>;
+		usb-supply = <&ldousb>;
+	};
+
+	/* PWM for LED/Backlight */
+	pwm: pwm {
+		compatible = "ti,twl6030-pwm";
+		#pwm-cells = <2>;
+	};
+
+	/* PWM LED Controller */
+	pwmled {
+		compatible = "ti,twl6030-pwmled";
+		#pwm-cells = <2>;
+	};
+
+	/* Power Button */
+	pwrbutton {
+		compatible = "ti,twl6030-pwrbutton";
+		interrupts = <0>;
+	};
+
+	/* GPADC - General Purpose ADC */
+	gpadc {
+		compatible = "ti,twl6032-gpadc";
+		#io-channel-cells = <1>;
+		interrupts = <3>;
+	};
+
+	/* Audio Codec */
+	audio-codec@4c {
+		pinctrl-names = "default";
+		pinctrl-0 = <&twl_audio_pins>;
+		compatible = "ti,twl6041";
+		reg = <0x4c>;
+		interrupts = <0 0x77 0x04>;
+		ti,audpwron-gpio = <&gpio4 16 0>;
+	};
+};
+
+/* DSI1 LCD Panel Configuration */
+&dsi1 {
+	status = "okay";
+	vdd-supply = <&vdd_lcdtp>;
+	pinctrl-names = "default";
+	pinctrl-0 = <&dsi1_pins>;
+
+	port {
+		dsi1_out: endpoint {
+			remote-endpoint = <&panel0_in>;
+			lanes = <0 1 2 3 4>;
+		};
+	};
+
+	panel@0 {
+		compatible = "samsung,ltl090cl01";
+		reg = <0>;
+		label = "panel0";
+		status = "okay";
+		power-supply = <&vdd_lcdtp>;
+		reset-gpios = <&gpio5 17 0>;
+		enable-gpios = <&gpio1 27 0>;
+		backlight = <&lcd_backlight>;
+
+		port {
+			panel0_in: endpoint {
+				remote-endpoint = <&dsi1_out>;
+			};
+		};
+	};
+};
