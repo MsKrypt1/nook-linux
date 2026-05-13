@@ -256,6 +256,7 @@ MACHINE_END
 
 #ifdef CONFIG_ARCH_OMAP4
 static const char *const omap4_boards_compat[] __initconst = {
+	"ti,omap4470",
 	"ti,omap4460",
 	"ti,omap4430",
 	"ti,omap4",
