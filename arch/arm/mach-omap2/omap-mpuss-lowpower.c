@@ -447,7 +447,7 @@ int __init omap4_mpuss_init(void)
 		enable_mercury_retention_mode();
 	}
 
-	if (cpu_is_omap446x())
+	if (cpu_is_omap446x() || soc_is_omap447x())
 		omap_pm_ops.hotplug_restart = omap4460_secondary_startup;
 
 	return 0;
@@ -485,7 +485,7 @@ void __init omap4_mpuss_early_init(void)
 
 	if (soc_is_omap443x())
 		startup_pa = __pa_symbol(omap4_secondary_startup);
-	else if (soc_is_omap446x())
+	else if (soc_is_omap446x() || soc_is_omap447x())
 		startup_pa = __pa_symbol(omap4460_secondary_startup);
 	else if ((__boot_cpu_mode & MODE_MASK) == HYP_MODE)
 		startup_pa = __pa_symbol(omap5_secondary_hyp_startup);
