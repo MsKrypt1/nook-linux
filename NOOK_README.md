@@ -11,6 +11,14 @@ To open menuconfig use:
 make -j5 ARCH=arm menuconfig
 ```
 
+For enabling dynamic debug on startup, add to bootargs (example):
+`dyndbg=\"file edt-ft5x06.c +p; module omapdrm +p; file regmap-i2c.c +p; file i2c-core-base.c +p\"`
+
+The full bootargs would look like:
+`bootargs = "console=ttyS0,115200n8 earlyprintk root=/dev/ram0 rw init=/init ignore_loglevel initrd=0x82000000,0x0060B25D dyndbg=\"file edt-ft5x06.c +p; module omapdrm +p; file regmap-i2c.c +p; file i2c-core-base.c +p\"";`
+
+The bootargs currently can be set in DTS directly.
+
 # Packaging
 
 ## Ram disk
