@@ -170,11 +170,21 @@ static void omap_default_idle(void)
  * are part of L4 wakeup clockdomain.
  */
 static const struct static_dep_map omap4_static_dep_map[] = {
-	{.from = "mpuss_clkdm", .to = "l3_emif_clkdm"},
+	// TODO: currently fails with "Failed lookup mpuss_clkdm or l4_per for wakeup dependency" error
+	// But when original is used, the CPU1 freezes during bootup after static dependency setup.
+	// Need to investigate further.
+
+	// Mimicking the android static dependency map for OMAP446x/447x
+	//{.from = "mpuss_clkdm", .to = "l3_emif_clkdm"},
+	{.from = "mpuss_clkdm", .to = "l4_per"},
+	{.from = "mpuss_clkdm", .to = "l4_cfg"},
 	{.from = "mpuss_clkdm", .to = "l3_1_clkdm"},
 	{.from = "mpuss_clkdm", .to = "l3_2_clkdm"},
+	{.from = "mpuss_clkdm", .to = "l4wkup"},
 	{.from = "ducati_clkdm", .to = "l3_1_clkdm"},
 	{.from = "ducati_clkdm", .to = "l3_2_clkdm"},
+	{.from = "ducati_clkdm", .to = "l4_per"},
+	{.from = "ducati_clkdm", .to = "l4_cfg"},
 	{.from  = NULL} /* TERMINATION */
 };
 
@@ -223,7 +233,7 @@ static inline int omap4plus_init_static_deps(const struct static_dep_map *map)
  */
 int __init omap4_pm_init_early(void)
 {
-	if (cpu_is_omap446x())
+	if (cpu_is_omap446x() || soc_is_omap447x())
 		pm44xx_errata |= PM_OMAP4_ROM_SMP_BOOT_ERRATUM_GICD;
 
 	if (soc_is_omap54xx() || soc_is_dra7xx())
