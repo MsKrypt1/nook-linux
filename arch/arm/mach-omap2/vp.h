@@ -111,6 +111,9 @@ extern struct omap_vp_param omap3_core_vp_data;
 extern struct omap_vp_param omap4_mpu_vp_data;
 extern struct omap_vp_param omap4_iva_vp_data;
 extern struct omap_vp_param omap4_core_vp_data;
+extern struct omap_vp_param omap447x_mpu_vp_data;
+extern struct omap_vp_param omap447x_iva_vp_data;
+extern struct omap_vp_param omap447x_core_vp_data;
 
 void omap_vp_init(struct voltagedomain *voltdm);
 void omap_vp_enable(struct voltagedomain *voltdm);

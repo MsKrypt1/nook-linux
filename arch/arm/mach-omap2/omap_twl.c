@@ -218,6 +218,13 @@ int __init omap4_twl_init(void)
 	    of_find_compatible_node(NULL, NULL, "motorola,cpcap"))
 		return -ENODEV;
 
+	/* TWL6032 on OMAP4470: vendor kernel uses a 9 mV/us slew rate */
+	if (soc_is_omap447x()) {
+		omap4_mpu_pmic.slew_rate = 9000;
+		omap4_iva_pmic.slew_rate = 9000;
+		omap4_core_pmic.slew_rate = 9000;
+	}
+
 	voltdm = voltdm_lookup("mpu");
 	omap_voltage_register_pmic(voltdm, &omap4_mpu_pmic);
 

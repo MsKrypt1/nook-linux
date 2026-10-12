@@ -115,6 +115,9 @@ extern struct omap_vc_param omap3_core_vc_data;
 extern struct omap_vc_param omap4_mpu_vc_data;
 extern struct omap_vc_param omap4_iva_vc_data;
 extern struct omap_vc_param omap4_core_vc_data;
+extern struct omap_vc_param omap447x_mpu_vc_data;
+extern struct omap_vc_param omap447x_iva_vc_data;
+extern struct omap_vc_param omap447x_core_vc_data;
 
 void omap3_vc_set_pmic_signaling(int core_next_state);
 void omap4_vc_set_pmic_signaling(int core_next_state);
