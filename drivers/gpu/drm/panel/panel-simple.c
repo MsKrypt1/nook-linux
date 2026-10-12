@@ -5622,6 +5622,34 @@ static const struct panel_desc_dsi osd101t2045_53ts = {
 	.lanes = 4,
 };
 
+static const struct display_timing samsung_ltl090cl01_timing = {
+	.pixelclock = { 148480000, 148480000, 148480000 },
+	.hactive = { 1920, 1920, 1920 },
+	.hfront_porch = { 4, 4, 4 },
+	.hback_porch = { 39, 39, 39 },
+	.hsync_len = { 5, 5, 5 },
+	.vactive = { 1280, 1280, 1280 },
+	.vfront_porch = { 9, 9, 9 },
+	.vback_porch = { 10, 10, 10 },
+	.vsync_len = { 1, 1, 1 },
+};
+
+static const struct panel_desc_dsi samsung_ltl090cl01 = {
+	.desc = {
+		.timings = &samsung_ltl090cl01_timing,
+		.num_timings = 1,
+		.bpc = 8,
+		.size = {
+			.width = 190,
+			.height = 127,
+		},
+		.connector_type = DRM_MODE_CONNECTOR_DSI,
+	},
+	.flags = MIPI_DSI_MODE_VIDEO,
+	.format = MIPI_DSI_FMT_RGB666_PACKED,
+	.lanes = 4,
+};
+
 static const struct of_device_id dsi_of_match[] = {
 	{
 		.compatible = "auo,b080uan01",
@@ -5644,6 +5672,9 @@ static const struct of_device_id dsi_of_match[] = {
 	}, {
 		.compatible = "osddisplays,osd101t2045-53ts",
 		.data = &osd101t2045_53ts
+	}, {
+		.compatible = "samsung,ltl090cl01",
+		.data = &samsung_ltl090cl01
 	}, {
 		/* sentinel */
 	}
