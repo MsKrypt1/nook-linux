@@ -7,6 +7,8 @@
 #include <linux/reboot.h>
 #include "common.h"
 #include "prm.h"
+#include "prminst44xx.h"
+#include "soc.h"
 
 /**
  * omap44xx_restart - trigger a software restart of the SoC
@@ -19,5 +21,10 @@
 void omap44xx_restart(enum reboot_mode mode, const char *cmd)
 {
 	/* XXX Should save 'cmd' into scratchpad for use after reboot */
+	if (soc_is_omap447x()) {
+		omap4_prminst_global_cold_sw_reset();
+		return;
+	}
+
 	omap_prm_reset_system();
 }
