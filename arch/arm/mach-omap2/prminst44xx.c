@@ -175,7 +175,7 @@ int omap4_prminst_deassert_hardreset(u8 shift, u8 st_shift, u8 part, s16 inst,
 }
 
 
-void omap4_prminst_global_warm_sw_reset(void)
+static void omap4_prminst_global_sw_reset(u32 mask)
 {
 	u32 v;
 	s32 inst = omap4_prmst_get_prm_dev_inst();
@@ -185,11 +185,25 @@ void omap4_prminst_global_warm_sw_reset(void)
 
 	v = omap4_prminst_read_inst_reg(OMAP4430_PRM_PARTITION, inst,
 					OMAP4_PRM_RSTCTRL_OFFSET);
-	v |= OMAP4430_RST_GLOBAL_WARM_SW_MASK;
+	v |= mask;
 	omap4_prminst_write_inst_reg(v, OMAP4430_PRM_PARTITION,
 				 inst, OMAP4_PRM_RSTCTRL_OFFSET);
 
 	/* OCP barrier */
 	v = omap4_prminst_read_inst_reg(OMAP4430_PRM_PARTITION,
 				    inst, OMAP4_PRM_RSTCTRL_OFFSET);
+}
+
+void omap4_prminst_global_warm_sw_reset(void)
+{
+	omap4_prminst_global_sw_reset(OMAP4430_RST_GLOBAL_WARM_SW_MASK);
+}
+
+/*
+ * A global warm reset leaves the board hung on OMAP4470 (Nook HD+), the
+ * vendor kernel uses a cold reset for normal reboots instead.
+ */
+void omap4_prminst_global_cold_sw_reset(void)
+{
+	omap4_prminst_global_sw_reset(OMAP4430_RST_GLOBAL_COLD_SW_MASK);
 }
