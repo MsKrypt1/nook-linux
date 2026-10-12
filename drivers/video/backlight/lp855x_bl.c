@@ -197,7 +197,11 @@ static int lp855x_configure(struct lp855x *lp)
 			if (!lp855x_is_valid_rom_area(lp, addr))
 				continue;
 
-			ret = lp855x_write_byte(lp, addr, val);
+			if (pd->rom_data[i].append)
+				ret = lp855x_update_bit(lp, addr,
+							pd->rom_data[i].mask, val);
+			else
+				ret = lp855x_write_byte(lp, addr, val);
 			if (ret)
 				goto err;
 		}
@@ -353,6 +357,9 @@ static int lp855x_parse_dt(struct lp855x *lp)
 		for_each_child_of_node(node, child) {
 			of_property_read_u8(child, "rom-addr", &rom[i].addr);
 			of_property_read_u8(child, "rom-val", &rom[i].val);
+			rom[i].append = of_property_read_bool(child, "rom-append");
+			if (rom[i].append)
+				of_property_read_u8(child, "rom-mask", &rom[i].mask);
 			i++;
 		}
 

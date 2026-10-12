@@ -121,6 +121,8 @@ enum lp8557_brightness_source {
 struct lp855x_rom_data {
 	u8 addr;
 	u8 val;
+	u8 mask;	/* bits of val to apply when append is set */
+	bool append;	/* read-modify-write instead of overwriting */
 };
 
 /**
