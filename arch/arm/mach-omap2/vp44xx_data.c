@@ -99,3 +99,19 @@ struct omap_vp_param omap4_core_vp_data = {
 	.vddmin			= OMAP4_VP_CORE_VLIMITTO_VDDMIN,
 	.vddmax			= OMAP4_VP_CORE_VLIMITTO_VDDMAX,
 };
+
+/* OMAP4470 + TWL6032: VP limits from the vendor pmic min_volt/max_volt */
+struct omap_vp_param omap447x_mpu_vp_data = {
+	.vddmin			= 709000,
+	.vddmax			= 1418000,
+};
+
+struct omap_vp_param omap447x_iva_vp_data = {
+	.vddmin			= 709000,
+	.vddmax			= 1418000,
+};
+
+struct omap_vp_param omap447x_core_vp_data = {
+	.vddmin			= 709000,
+	.vddmax			= 1418000,
+};

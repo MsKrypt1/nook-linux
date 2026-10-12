@@ -113,3 +113,25 @@ struct omap_vc_param omap4_core_vc_data = {
 	.ret			= OMAP4_RET_VOLTAGE_UV,
 	.off			= OMAP4_OFF_VOLTAGE_UV,
 };
+
+/* OMAP4470 + TWL6032: on/onlp/ret/off levels from the vendor omap447x pmic data */
+struct omap_vc_param omap447x_mpu_vc_data = {
+	.on			= 1375000,
+	.onlp			= 1375000,
+	.ret			= 750000,
+	.off			= 0,
+};
+
+struct omap_vc_param omap447x_iva_vc_data = {
+	.on			= 1188000,
+	.onlp			= 1188000,
+	.ret			= 750000,
+	.off			= 0,
+};
+
+struct omap_vc_param omap447x_core_vc_data = {
+	.on			= 1200000,
+	.onlp			= 1200000,
+	.ret			= 830000,
+	.off			= 0,
+};

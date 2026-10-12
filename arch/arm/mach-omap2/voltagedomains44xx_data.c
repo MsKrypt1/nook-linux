@@ -105,20 +105,34 @@ void __init omap44xx_voltagedomains_init(void)
 		omap4_voltdm_mpu.volt_data = omap443x_vdd_mpu_volt_data;
 		omap4_voltdm_iva.volt_data = omap443x_vdd_iva_volt_data;
 		omap4_voltdm_core.volt_data = omap443x_vdd_core_volt_data;
-	} else if (cpu_is_omap446x() || soc_is_omap447x()) {
+	} else if (cpu_is_omap446x()) {
 		omap4_voltdm_mpu.volt_data = omap446x_vdd_mpu_volt_data;
 		omap4_voltdm_iva.volt_data = omap446x_vdd_iva_volt_data;
 		omap4_voltdm_core.volt_data = omap446x_vdd_core_volt_data;
+	} else if (soc_is_omap447x()) {
+		omap4_voltdm_mpu.volt_data = omap447x_vdd_mpu_volt_data;
+		omap4_voltdm_iva.volt_data = omap447x_vdd_iva_volt_data;
+		omap4_voltdm_core.volt_data = omap447x_vdd_core_volt_data;
 	}
 #endif
 
-	omap4_voltdm_mpu.vp_param = &omap4_mpu_vp_data;
-	omap4_voltdm_iva.vp_param = &omap4_iva_vp_data;
-	omap4_voltdm_core.vp_param = &omap4_core_vp_data;
+	if (soc_is_omap447x()) {
+		omap4_voltdm_mpu.vp_param = &omap447x_mpu_vp_data;
+		omap4_voltdm_iva.vp_param = &omap447x_iva_vp_data;
+		omap4_voltdm_core.vp_param = &omap447x_core_vp_data;
 
-	omap4_voltdm_mpu.vc_param = &omap4_mpu_vc_data;
-	omap4_voltdm_iva.vc_param = &omap4_iva_vc_data;
-	omap4_voltdm_core.vc_param = &omap4_core_vc_data;
+		omap4_voltdm_mpu.vc_param = &omap447x_mpu_vc_data;
+		omap4_voltdm_iva.vc_param = &omap447x_iva_vc_data;
+		omap4_voltdm_core.vc_param = &omap447x_core_vc_data;
+	} else {
+		omap4_voltdm_mpu.vp_param = &omap4_mpu_vp_data;
+		omap4_voltdm_iva.vp_param = &omap4_iva_vp_data;
+		omap4_voltdm_core.vp_param = &omap4_core_vp_data;
+
+		omap4_voltdm_mpu.vc_param = &omap4_mpu_vc_data;
+		omap4_voltdm_iva.vc_param = &omap4_iva_vc_data;
+		omap4_voltdm_core.vc_param = &omap4_core_vc_data;
+	}
 
 	for (i = 0; voltdm = voltagedomains_omap4[i], voltdm; i++)
 		voltdm->sys_clk.name = sys_clk_name;
