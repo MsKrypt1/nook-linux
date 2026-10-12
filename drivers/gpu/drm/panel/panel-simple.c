@@ -5623,7 +5623,11 @@ static const struct panel_desc_dsi osd101t2045_53ts = {
 };
 
 static const struct display_timing samsung_ltl090cl01_timing = {
-	.pixelclock = { 148480000, 148480000, 148480000 },
+	/*
+	 * Value as found in build #159. display_timing.pixelclock is in Hz,
+	 * so this is most likely meant to be 148480000 (148.48 MHz, ~58 Hz).
+	 */
+	.pixelclock = { 148480, 148480, 148480 },
 	.hactive = { 1920, 1920, 1920 },
 	.hfront_porch = { 4, 4, 4 },
 	.hback_porch = { 39, 39, 39 },
