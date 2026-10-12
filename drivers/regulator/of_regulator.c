@@ -237,6 +237,14 @@ static int of_get_regulation_constraints(struct device *dev,
 	if (!of_property_read_u32(np, "regulator-system-load", &pval))
 		constraints->system_load = pval;
 
+	if (!of_property_read_u32(np, "regulator-initial-state", &pval)) {
+		if (pval <= PM_SUSPEND_MEM)
+			constraints->initial_state = pval;
+		else
+			pr_warn("%pOFn: invalid regulator-initial-state %u\n",
+				np, pval);
+	}
+
 	if (n_phandles) {
 		constraints->max_spread = devm_kzalloc(dev,
 				sizeof(*constraints->max_spread) * n_phandles,
@@ -323,7 +331,9 @@ static int of_get_regulation_constraints(struct device *dev,
 					"regulator-changeable-in-suspend"))
 			suspend_state->changeable = true;
 
-		if (i == PM_SUSPEND_MEM)
+		if (i == PM_SUSPEND_MEM &&
+		    !of_property_read_bool(suspend_np,
+					   "regulator-ignore-initial-state"))
 			constraints->initial_state = PM_SUSPEND_MEM;
 
 		of_node_put(suspend_np);
