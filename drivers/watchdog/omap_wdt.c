@@ -58,6 +58,12 @@ module_param(early_enable, bool, 0);
 MODULE_PARM_DESC(early_enable,
 	"Watchdog is started on module insertion (default=0)");
 
+static bool run_in_suspend;
+module_param(run_in_suspend, bool, 0);
+MODULE_PARM_DESC(run_in_suspend,
+	"Keep the watchdog running in system suspend, so a board that does not "
+	"resume within the timeout is reset (default=0)");
+
 struct omap_wdt_dev {
 	struct watchdog_device wdog;
 	void __iomem    *base;          /* physical */
@@ -324,7 +330,10 @@ static int omap_wdt_suspend(struct platform_device *pdev, pm_message_t state)
 	struct omap_wdt_dev *wdev = platform_get_drvdata(pdev);
 
 	mutex_lock(&wdev->lock);
-	if (wdev->omap_wdt_users) {
+	if (wdev->omap_wdt_users && run_in_suspend) {
+		/* Give suspend and the sleep a full timeout from here */
+		omap_wdt_reload(wdev);
+	} else if (wdev->omap_wdt_users) {
 		omap_wdt_disable(wdev);
 		pm_runtime_put_sync(wdev->dev);
 	}
@@ -338,7 +347,9 @@ static int omap_wdt_resume(struct platform_device *pdev)
 	struct omap_wdt_dev *wdev = platform_get_drvdata(pdev);
 
 	mutex_lock(&wdev->lock);
-	if (wdev->omap_wdt_users) {
+	if (wdev->omap_wdt_users && run_in_suspend) {
+		omap_wdt_reload(wdev);
+	} else if (wdev->omap_wdt_users) {
 		pm_runtime_get_sync(wdev->dev);
 		omap_wdt_enable(wdev);
 		omap_wdt_reload(wdev);
