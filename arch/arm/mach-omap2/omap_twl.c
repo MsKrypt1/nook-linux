@@ -36,10 +36,42 @@
 #define OMAP4_VDD_CORE_SR_VOLT_REG	0x61
 #define OMAP4_VDD_CORE_SR_CMD_REG	0x62
 
+/*
+ * OMAP4470 boards pair the SoC with a TWL6032, which has no VCORE1-3.
+ * vdd_mpu is on SMPS1, vdd_core on SMPS2 and vdd_iva on SMPS5.
+ */
+#define TWL6032_SMPS5_SR_VOLT_REG	0x49
+#define TWL6032_SMPS5_SR_CMD_REG	0x4A
+#define TWL6032_SMPS2_SR_VOLT_REG	0x5B
+#define TWL6032_SMPS2_SR_CMD_REG	0x5C
+
 static bool is_offset_valid;
 static u8 smps_offset;
 
 #define REG_SMPS_OFFSET         0xE0
+
+/*
+ * Read the SMPS_OFFSET efuse register. Only a successful read is cached:
+ * the TWL may not have probed yet, and assuming "no offset" after a failed
+ * read shifts every vsel by about 100 mV.
+ */
+static int twl6030_read_smps_offset(void)
+{
+	int ret;
+
+	if (is_offset_valid)
+		return 0;
+
+	ret = twl_i2c_read_u8(TWL6030_MODULE_ID0, &smps_offset,
+			      REG_SMPS_OFFSET);
+	if (ret)
+		return ret;
+
+	is_offset_valid = true;
+	pr_info("%s: SMPS_OFFSET 0x%02x\n", __func__, smps_offset);
+
+	return 0;
+}
 
 static unsigned long twl4030_vsel_to_uv(const u8 vsel)
 {
@@ -61,11 +93,8 @@ static unsigned long twl6030_vsel_to_uv(const u8 vsel)
 	 * is programmed to all 0's where as starting from
 	 * TWL6030 ES1.1 the efuse is programmed to 1
 	 */
-	if (!is_offset_valid) {
-		twl_i2c_read_u8(TWL6030_MODULE_ID0, &smps_offset,
-				REG_SMPS_OFFSET);
-		is_offset_valid = true;
-	}
+	WARN_ONCE(twl6030_read_smps_offset(),
+		  "%s: SMPS_OFFSET unknown, vsel may be wrong\n", __func__);
 
 	if (!vsel)
 		return 0;
@@ -95,11 +124,8 @@ static u8 twl6030_uv_to_vsel(unsigned long uv)
 	 * is programmed to all 0's where as starting from
 	 * TWL6030 ES1.1 the efuse is programmed to 1
 	 */
-	if (!is_offset_valid) {
-		twl_i2c_read_u8(TWL6030_MODULE_ID0, &smps_offset,
-				REG_SMPS_OFFSET);
-		is_offset_valid = true;
-	}
+	WARN_ONCE(twl6030_read_smps_offset(),
+		  "%s: SMPS_OFFSET unknown, vsel may be wrong\n", __func__);
 
 	if (!uv)
 		return 0x00;
@@ -218,11 +244,27 @@ int __init omap4_twl_init(void)
 	    of_find_compatible_node(NULL, NULL, "motorola,cpcap"))
 		return -ENODEV;
 
+	/*
+	 * Every vsel the VC and VP get programmed with depends on
+	 * SMPS_OFFSET. Without it, leave the voltage layer unconfigured
+	 * rather than send wrong voltages.
+	 */
+	if (twl6030_read_smps_offset()) {
+		pr_err("%s: cannot read TWL SMPS_OFFSET, no PMIC registered\n",
+		       __func__);
+		return -ENODEV;
+	}
+
 	/* TWL6032 on OMAP4470: vendor kernel uses a 9 mV/us slew rate */
 	if (soc_is_omap447x()) {
 		omap4_mpu_pmic.slew_rate = 9000;
 		omap4_iva_pmic.slew_rate = 9000;
 		omap4_core_pmic.slew_rate = 9000;
+
+		omap4_iva_pmic.volt_reg_addr = TWL6032_SMPS5_SR_VOLT_REG;
+		omap4_iva_pmic.cmd_reg_addr = TWL6032_SMPS5_SR_CMD_REG;
+		omap4_core_pmic.volt_reg_addr = TWL6032_SMPS2_SR_VOLT_REG;
+		omap4_core_pmic.cmd_reg_addr = TWL6032_SMPS2_SR_CMD_REG;
 	}
 
 	voltdm = voltdm_lookup("mpu");

@@ -136,6 +136,27 @@ int (*omap_pm_soc_init)(void);
 
 static int __init omap2_common_pm_late_init(void)
 {
+	if (!omap_pm_soc_init)
+		return 0;
+
+	/*
+	 * Smartreflex device init. Stays at late_initcall: the smartreflex
+	 * driver probes with this platform data.
+	 */
+	omap_devinit_smartreflex();
+
+	return 0;
+}
+omap_late_initcall(omap2_common_pm_late_init);
+
+/*
+ * The voltage layer converts voltages to PMIC vsel values, and on TWL6030/
+ * TWL6032 that needs SMPS_OFFSET read from the PMIC over I2C. The TWL can
+ * come up as late as the deferred probe flush at late_initcall, so init the
+ * voltage layer, and PM after it, at late_initcall_sync.
+ */
+static int __init omap2_common_pm_late_init_sync(void)
+{
 	int error;
 
 	if (!omap_pm_soc_init)
@@ -143,14 +164,23 @@ static int __init omap2_common_pm_late_init(void)
 
 	/* Init the voltage layer */
 	omap3_twl_init();
-	omap4_twl_init();
-	omap4_cpcap_init();
+	error = omap4_twl_init();
+	if (error)
+		error = omap4_cpcap_init();
 	omap_voltage_late_init();
 
-	/* Smartreflex device init */
-	omap_devinit_smartreflex();
-
-	error = omap_pm_soc_init();
+	/*
+	 * Without PMIC data the VC is not programmed. If the PRCM then took
+	 * a domain to retention, the VC would get no I2C ACK and trigger a
+	 * global warm reset (OMAP4470 TRM section 3.8.5).
+	 */
+	if (cpu_is_omap44xx() && error) {
+		pr_err("%s: no PMIC for the voltage layer, skipping PM init\n",
+		       __func__);
+		error = 0;
+	} else {
+		error = omap_pm_soc_init();
+	}
 	if (error)
 		pr_warn("%s: pm soc init failed: %i\n", __func__, error);
 
@@ -158,4 +188,4 @@ static int __init omap2_common_pm_late_init(void)
 
 	return 0;
 }
-omap_late_initcall(omap2_common_pm_late_init);
+omap_late_initcall_sync(omap2_common_pm_late_init_sync);

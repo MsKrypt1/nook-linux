@@ -114,24 +114,30 @@ struct omap_vc_param omap4_core_vc_data = {
 	.off			= OMAP4_OFF_VOLTAGE_UV,
 };
 
-/* OMAP4470 + TWL6032: on/onlp/ret/off levels from the vendor omap447x pmic data */
+/*
+ * OMAP4470: nominal pre-AVS voltages from SWPU325 Tables 2-1, 2-3 and 2-5.
+ * vdd_mpu is capped at OPP100 for now (1.200 V, as u-boot sets it), vdd_iva's
+ * DPLL is set for OPP100 (1.137 V) and vdd_core runs OPP119 (1.19 V; CORE_X2
+ * 466 MHz). Retention minimum is 0.750 V on all three rails; 0.83 V leaves
+ * margin for SMPS tolerance and IR drop.
+ */
 struct omap_vc_param omap447x_mpu_vc_data = {
-	.on			= 1375000,
-	.onlp			= 1375000,
-	.ret			= 750000,
+	.on			= 1200000,
+	.onlp			= 1200000,
+	.ret			= 830000,
 	.off			= 0,
 };
 
 struct omap_vc_param omap447x_iva_vc_data = {
-	.on			= 1188000,
-	.onlp			= 1188000,
-	.ret			= 750000,
+	.on			= 1137000,
+	.onlp			= 1137000,
+	.ret			= 830000,
 	.off			= 0,
 };
 
 struct omap_vc_param omap447x_core_vc_data = {
-	.on			= 1200000,
-	.onlp			= 1200000,
+	.on			= 1190000,
+	.onlp			= 1190000,
 	.ret			= 830000,
 	.off			= 0,
 };
