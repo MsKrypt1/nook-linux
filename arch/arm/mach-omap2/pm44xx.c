@@ -11,6 +11,7 @@
 #include <linux/suspend.h>
 #include <linux/module.h>
 #include <linux/list.h>
+#include <linux/delay.h>
 #include <linux/err.h>
 #include <linux/slab.h>
 #include <asm/system_misc.h>
@@ -170,21 +171,11 @@ static void omap_default_idle(void)
  * are part of L4 wakeup clockdomain.
  */
 static const struct static_dep_map omap4_static_dep_map[] = {
-	// TODO: currently fails with "Failed lookup mpuss_clkdm or l4_per for wakeup dependency" error
-	// But when original is used, the CPU1 freezes during bootup after static dependency setup.
-	// Need to investigate further.
-
-	// Mimicking the android static dependency map for OMAP446x/447x
-	//{.from = "mpuss_clkdm", .to = "l3_emif_clkdm"},
-	{.from = "mpuss_clkdm", .to = "l4_per"},
-	{.from = "mpuss_clkdm", .to = "l4_cfg"},
+	{.from = "mpuss_clkdm", .to = "l3_emif_clkdm"},
 	{.from = "mpuss_clkdm", .to = "l3_1_clkdm"},
 	{.from = "mpuss_clkdm", .to = "l3_2_clkdm"},
-	{.from = "mpuss_clkdm", .to = "l4wkup"},
 	{.from = "ducati_clkdm", .to = "l3_1_clkdm"},
 	{.from = "ducati_clkdm", .to = "l3_2_clkdm"},
-	{.from = "ducati_clkdm", .to = "l4_per"},
-	{.from = "ducati_clkdm", .to = "l4_cfg"},
 	{.from  = NULL} /* TERMINATION */
 };
 
@@ -192,6 +183,44 @@ static const struct static_dep_map omap5_dra7_static_dep_map[] = {
 	{.from = "mpu_clkdm", .to = "emif_clkdm"},
 	{.from  = NULL} /* TERMINATION */
 };
+
+/**
+ * omap4plus_add_static_dep() - Enable one static dependency
+ * @from: source clockdomain
+ * @to: destination clockdomain
+ *
+ * On OMAP4, keep the destination domain awake and wait for its power domain
+ * to be ON while the dependency bit changes, as in OMAP4470 TRM Table 3-343.
+ * Erratum i745 calls for this sequence for MPU -> MEMIF.
+ */
+static int __init omap4plus_add_static_dep(struct clockdomain *from,
+					   struct clockdomain *to)
+{
+	struct powerdomain *pwrdm = clkdm_get_pwrdm(to);
+	int i, ret;
+
+	if (!cpu_is_omap44xx())
+		return clkdm_add_wkdep(from, to);
+
+	clkdm_deny_idle(to);
+
+	for (i = 0; i < 1000; i++) {
+		if (pwrdm_read_pwrst(pwrdm) == PWRDM_POWER_ON)
+			break;
+		udelay(1);
+	}
+	if (i == 1000) {
+		pr_err("%s: %s not ON, not adding %s -> %s\n", __func__,
+		       pwrdm->name, from->name, to->name);
+		ret = -ETIMEDOUT;
+	} else {
+		ret = clkdm_add_wkdep(from, to);
+	}
+
+	clkdm_allow_idle(to);
+
+	return ret;
+}
 
 /**
  * omap4plus_init_static_deps() - Initialize a static dependency map
@@ -213,7 +242,7 @@ static inline int omap4plus_init_static_deps(const struct static_dep_map *map)
 			       map->from, map->to);
 			return -EINVAL;
 		}
-		ret = clkdm_add_wkdep(from, to);
+		ret = omap4plus_add_static_dep(from, to);
 		if (ret) {
 			pr_err("Failed to add %s -> %s wakeup dependency(%d)\n",
 			       map->from, map->to, ret);
