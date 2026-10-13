@@ -100,18 +100,22 @@ struct omap_vp_param omap4_core_vp_data = {
 	.vddmax			= OMAP4_VP_CORE_VLIMITTO_VDDMAX,
 };
 
-/* OMAP4470 + TWL6032: VP limits from the vendor pmic min_volt/max_volt */
+/*
+ * OMAP4470: VP limits span retention up to the highest nominal per rail
+ * (SWPU325 Tables 2-1, 2-3, 2-5). They also stay below TWL6032 vsel 0x3A,
+ * the first non-linear code.
+ */
 struct omap_vp_param omap447x_mpu_vp_data = {
-	.vddmin			= 709000,
-	.vddmax			= 1418000,
+	.vddmin			= 830000,
+	.vddmax			= 1387000,
 };
 
 struct omap_vp_param omap447x_iva_vp_data = {
-	.vddmin			= 709000,
-	.vddmax			= 1418000,
+	.vddmin			= 830000,
+	.vddmax			= 1380000,
 };
 
 struct omap_vp_param omap447x_core_vp_data = {
-	.vddmin			= 709000,
-	.vddmax			= 1418000,
+	.vddmin			= 830000,
+	.vddmax			= 1190000,
 };
