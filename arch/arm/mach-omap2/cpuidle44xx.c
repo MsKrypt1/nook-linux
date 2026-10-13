@@ -315,6 +315,17 @@ int __init omap4_idle_init(void)
 		idle_driver = &omap4_idle_driver;
 	}
 
+	/*
+	 * OMAP4470: coupled C2/C3 (both CPUs off, MPUSS CSWR/OSWR) hard-hang
+	 * the board within a second. CPU1 hotplug and C2 with CPU1 offline
+	 * work. Register them disabled; they can be enabled per CPU via
+	 * /sys/devices/system/cpu/cpuN/cpuidle/stateN/disable for debugging.
+	 */
+	if (soc_is_omap447x()) {
+		omap4_idle_driver.states[1].flags |= CPUIDLE_FLAG_OFF;
+		omap4_idle_driver.states[2].flags |= CPUIDLE_FLAG_OFF;
+	}
+
 	mpu_pd = pwrdm_lookup("mpu_pwrdm");
 	cpu_pd[0] = pwrdm_lookup("cpu0_pwrdm");
 	cpu_pd[1] = pwrdm_lookup("cpu1_pwrdm");
