@@ -834,9 +834,34 @@ int __init omap44xx_prm_init(const struct omap_prcm_init_data *data)
 	return prm_register(&omap44xx_prm_ll_data);
 }
 
+/**
+ * omap447x_prm_clear_reset_sources - log and clear PRM_RSTST
+ *
+ * The B&N X-Loader on the OMAP4470 Nook HD+ picks its EMIF setup from
+ * PRM_RSTST. The bits are sticky, so after a watchdog or warm SW reset it
+ * still sees GLOBAL_COLD_RST from the last power-on, reprograms the running
+ * LPDDR2 as for a cold boot, fails to read the vendor ID and hangs. The
+ * vendor kernel cleared the register at boot; do the same.
+ */
+static void omap447x_prm_clear_reset_sources(void)
+{
+	s32 inst = omap4_prmst_get_prm_dev_inst();
+	u32 v;
+
+	if (inst == PRM_INSTANCE_UNKNOWN)
+		return;
+
+	v = omap4_prm_read_inst_reg(inst, OMAP4_RM_RSTST);
+	pr_info("PRM: last reset sources PRM_RSTST=0x%08x\n", v);
+	omap4_prm_write_inst_reg(v, inst, OMAP4_RM_RSTST);
+}
+
 static int omap44xx_prm_late_init(void)
 {
 	int irq_num;
+
+	if (soc_is_omap447x())
+		omap447x_prm_clear_reset_sources();
 
 	if (!(prm_features & PRM_HAS_IO_WAKEUP))
 		return 0;
