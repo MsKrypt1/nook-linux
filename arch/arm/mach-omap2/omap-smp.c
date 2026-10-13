@@ -152,8 +152,16 @@ static void omap4_secondary_init(unsigned int cpu)
 	 * while executing NS_SMP API on CPU1 and PPA version must be 1.4.0+.
 	 * OMAP443X GP devices- SMP bit isn't accessible.
 	 * OMAP446X GP devices - SMP bit access is enabled on both CPUs.
+	 *
+	 * OMAP447X HS: the same API also loads the CP15 diagnostic register
+	 * (0x850 on CPU0). omap4_cpu_resume calls it on every CPU1 wakeup
+	 * from OFF, so CPU1 must boot with it too. Otherwise cpu_resume finds
+	 * a diagnostic value different from the one saved at suspend, writes
+	 * it from non-secure mode, and CPU1 takes an undefined instruction
+	 * exception with the MMU off.
 	 */
-	if (soc_is_omap443x() && (omap_type() != OMAP2_DEVICE_TYPE_GP))
+	if ((soc_is_omap443x() || soc_is_omap447x()) &&
+	    (omap_type() != OMAP2_DEVICE_TYPE_GP))
 		omap_secure_dispatcher(OMAP4_PPA_CPU_ACTRL_SMP_INDEX,
 							4, 0, 0, 0, 0, 0);
 
