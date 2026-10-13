@@ -12,6 +12,7 @@
 #include <linux/module.h>
 #include <linux/of.h>
 #include <linux/platform_device.h>
+#include <linux/pm_wakeirq.h>
 #include <linux/pm_wakeup.h>
 #include <linux/delay.h>
 
@@ -115,6 +116,14 @@ static int twl6030_pwrbutton_probe(struct platform_device *pdev)
 		dev_dbg(dev, "Can't register power button: %d\n", err);
 		return err;
 	}
+
+	/* The power button is the user's way to resume from suspend */
+	err = devm_device_init_wakeup(dev);
+	if (err)
+		return err;
+	err = devm_pm_set_wake_irq(dev, irq);
+	if (err)
+		return err;
 
 	twl6030_interrupt_unmask(0x01, REG_INT_MSK_LINE_A);
 	twl6030_interrupt_unmask(0x01, REG_INT_MSK_STS_A);
