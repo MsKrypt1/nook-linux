@@ -331,6 +331,14 @@ int twl6030_init_irq(struct device *dev, int irq_num)
 	twl6030_irq->irq_chip.name = "twl6030";
 	twl6030_irq->irq_chip.irq_set_type = NULL;
 	twl6030_irq->irq_chip.irq_set_wake = twl6030_irq_set_wake;
+	/*
+	 * dummy_irq_chip has IRQCHIP_SKIP_SET_WAKE, which would keep the core
+	 * from calling twl6030_irq_set_wake(). The wake count then stays at
+	 * zero and the PM notifier never makes the PIH interrupt a wakeup
+	 * source, so no TWL6030 interrupt (RTC alarm, power button) can wake
+	 * the system.
+	 */
+	twl6030_irq->irq_chip.flags &= ~IRQCHIP_SKIP_SET_WAKE;
 
 	twl6030_irq->pm_nb.notifier_call = twl6030_irq_pm_notifier;
 	atomic_set(&twl6030_irq->wakeirqs, 0);
