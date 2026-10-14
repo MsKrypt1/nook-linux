@@ -164,5 +164,12 @@ extern void omap54xx_voltagedomains_init(void);
 struct voltagedomain *voltdm_lookup(const char *name);
 void voltdm_init(struct voltagedomain **voltdm_list);
 void voltdm_reset(struct voltagedomain *voltdm);
+int voltdm_scale(struct voltagedomain *voltdm, unsigned long target_volt);
 unsigned long voltdm_get_voltage(struct voltagedomain *voltdm);
+
+#if defined(CONFIG_ARCH_OMAP4) && defined(CONFIG_REGULATOR)
+int omap_vdd_regulator_init(void);
+#else
+static inline int omap_vdd_regulator_init(void) { return 0; }
+#endif
 #endif

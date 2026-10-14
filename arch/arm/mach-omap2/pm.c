@@ -180,6 +180,10 @@ static int __init omap2_common_pm_late_init_sync(void)
 		error = 0;
 	} else {
 		error = omap_pm_soc_init();
+
+		/* Voltage domain regulators, e.g. the cpu0-supply for cpufreq */
+		if (cpu_is_omap44xx())
+			omap_vdd_regulator_init();
 	}
 	if (error)
 		pr_warn("%s: pm soc init failed: %i\n", __func__, error);
