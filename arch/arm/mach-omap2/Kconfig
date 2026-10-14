@@ -187,6 +187,17 @@ config POWER_AVS_OMAP_CLASS3
 	  Class 3 implementation of Smartreflex employs continuous hardware
 	  voltage calibration.
 
+config POWER_AVS_OMAP_CLASS1P5
+	bool "Class 1.5 mode of Smartreflex Implementation"
+	depends on POWER_AVS_OMAP && ARCH_OMAP4 && !POWER_AVS_OMAP_CLASS3
+	help
+	  Say Y to enable Class 1.5 implementation of Smartreflex
+
+	  Class 1.5 calibrates each OPP in software: the SmartReflex loop
+	  runs until the voltage settles, then stops, and the OPP keeps the
+	  settled voltage. It recalibrates periodically for aging. OMAP4470
+	  supports only this class.
+
 config OMAP3_L2_AUX_SECURE_SAVE_RESTORE
 	bool "OMAP3 HS/EMU save and restore for L2 AUX control register"
 	depends on ARCH_OMAP3 && PM
