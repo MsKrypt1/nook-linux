@@ -12,6 +12,7 @@
 #define __ARCH_ARM_MACH_OMAP2_VOLTAGE_H
 
 #include <linux/err.h>
+#include <linux/mutex.h>
 
 #include <linux/platform_data/voltage-omap.h>
 
@@ -55,6 +56,7 @@ struct omap_vfsm_instance {
  * @read: read-modify-write a VC/VP register
  * @sys_clk: system clock name/frequency, used for various timing calculations
  * @scale: function used to scale the voltage of the voltagedomain
+ * @lock: serializes voltage changes with SmartReflex calibration
  * @nominal_volt: current nominal voltage for this voltage domain
  * @volt_data: voltage table having the distinct voltages supported
  *             by the domain and other associated per voltage data.
@@ -82,6 +84,7 @@ struct voltagedomain {
 
 	int (*scale) (struct voltagedomain *voltdm,
 		      unsigned long target_volt);
+	struct mutex lock;
 
 	u32 nominal_volt;
 	struct omap_volt_data *volt_data;
@@ -171,5 +174,13 @@ unsigned long voltdm_get_voltage(struct voltagedomain *voltdm);
 int omap_vdd_regulator_init(void);
 #else
 static inline int omap_vdd_regulator_init(void) { return 0; }
+#endif
+
+#ifdef CONFIG_POWER_AVS_OMAP_CLASS1P5
+int omap_sr_class1p5_init(void);
+void omap_sr_class1p5_scaled(struct voltagedomain *voltdm);
+#else
+static inline int omap_sr_class1p5_init(void) { return 0; }
+static inline void omap_sr_class1p5_scaled(struct voltagedomain *voltdm) {}
 #endif
 #endif

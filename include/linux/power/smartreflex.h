@@ -214,7 +214,7 @@ struct omap_smartreflex_dev_attr {
 };
 
 /*
- * The smart reflex driver supports CLASS1 CLASS2 and CLASS3 SR.
+ * The smart reflex driver supports CLASS1 CLASS2 CLASS3 and CLASS1P5 SR.
  * The smartreflex class driver should pass the class type.
  * Should be used to populate the class_type field of the
  * omap_smartreflex_class_data structure.
@@ -222,6 +222,7 @@ struct omap_smartreflex_dev_attr {
 #define SR_CLASS1	0x1
 #define SR_CLASS2	0x2
 #define SR_CLASS3	0x3
+#define SR_CLASS1P5	0x15
 
 /**
  * struct omap_sr_class_data - Smartreflex class driver info
@@ -301,6 +302,7 @@ extern struct omap_sr_data omap_sr_pdata[OMAP_SR_NR];
 void omap_sr_enable(struct voltagedomain *voltdm);
 void omap_sr_disable(struct voltagedomain *voltdm);
 void omap_sr_disable_reset_volt(struct voltagedomain *voltdm);
+int omap_sr_autocomp_start(struct voltagedomain *voltdm);
 
 /* Smartreflex driver hooks to be called from Smartreflex class driver */
 int sr_enable(struct omap_sr *sr, unsigned long volt);
@@ -316,5 +318,9 @@ static inline void omap_sr_enable(struct voltagedomain *voltdm) {}
 static inline void omap_sr_disable(struct voltagedomain *voltdm) {}
 static inline void omap_sr_disable_reset_volt(
 		struct voltagedomain *voltdm) {}
+static inline int omap_sr_autocomp_start(struct voltagedomain *voltdm)
+{
+	return -ENODEV;
+}
 #endif
 #endif

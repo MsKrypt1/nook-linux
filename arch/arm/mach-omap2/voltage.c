@@ -103,9 +103,19 @@ int voltdm_scale(struct voltagedomain *voltdm, unsigned long target_volt)
 		return -EINVAL;
 	}
 
-	ret = voltdm->scale(voltdm, volt);
+	/*
+	 * The OPP is still identified by its nominal voltage, but the rail
+	 * goes to the SmartReflex class 1.5 voltage once there is one.
+	 */
+	mutex_lock(&voltdm->lock);
+	ret = voltdm->scale(voltdm, voltdm->volt_data[i].volt_calibrated ? :
+			    volt);
 	if (!ret)
 		voltdm->nominal_volt = volt;
+	mutex_unlock(&voltdm->lock);
+
+	if (!ret)
+		omap_sr_class1p5_scaled(voltdm);
 
 	return ret;
 }
@@ -197,6 +207,12 @@ struct omap_volt_data *omap_voltage_get_voltdata(struct voltagedomain *voltdm,
 			return &voltdm->volt_data[i];
 	}
 
+	/* A calibrated voltage belongs to its OPP too, e.g. for the errorgain */
+	for (i = 0; voltdm->volt_data[i].volt_nominal != 0; i++) {
+		if (volt && voltdm->volt_data[i].volt_calibrated == volt)
+			return &voltdm->volt_data[i];
+	}
+
 	pr_notice("%s: Unable to match the current voltage with the voltage table for vdd_%s\n",
 		  __func__, voltdm->name);
 
@@ -266,6 +282,15 @@ int __init omap_voltage_late_init(void)
 			voltdm->scale = omap_vp_forceupdate_scale;
 			omap_vp_init(voltdm);
 		}
+
+		/*
+		 * Nothing has scaled the domain yet. The VC ON command holds
+		 * the voltage the bootloader is expected to have left on the
+		 * rail, and the SMPS voltage register cannot be read back, so
+		 * start from that.
+		 */
+		if (voltdm->vc && voltdm->vc_param && !voltdm->nominal_volt)
+			voltdm->nominal_volt = voltdm->vc_param->on;
 	}
 
 	return 0;
@@ -292,6 +317,7 @@ static int _voltdm_register(struct voltagedomain *voltdm)
 	if (!voltdm || !voltdm->name)
 		return -EINVAL;
 
+	mutex_init(&voltdm->lock);
 	list_add(&voltdm->node, &voltdm_list);
 
 	pr_debug("voltagedomain: registered %s\n", voltdm->name);
