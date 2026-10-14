@@ -56,6 +56,8 @@ struct sr1p5 {
 
 static struct sr1p5 sr1p5_doms[OMAP_SR_NR];
 static struct delayed_work sr1p5_recal;
+/* Domains whose SR/VP loop is running, for the restart path (i724) */
+static atomic_t sr1p5_busy = ATOMIC_INIT(0);
 
 static unsigned long sr1p5_recal_delay(void)
 {
@@ -138,10 +140,14 @@ static void sr1p5_calibrate(struct sr1p5 *d)
 	if (ret)
 		goto out;
 
+	atomic_inc(&sr1p5_busy);
+	smp_mb__after_atomic();
 	omap_vp_enable(voltdm);
 	ret = sr_enable(sr, nominal);
 	if (ret) {
 		omap_vp_disable(voltdm);
+		smp_mb__before_atomic();
+		atomic_dec(&sr1p5_busy);
 		goto out;
 	}
 
@@ -162,6 +168,8 @@ static void sr1p5_calibrate(struct sr1p5 *d)
 	sr_disable_errgen(sr);
 	omap_vp_disable(voltdm);
 	sr_disable(sr);
+	smp_mb__before_atomic();
+	atomic_dec(&sr1p5_busy);
 
 	/* Still moving: take the highest voltage of the last polls */
 	vsel = sr1p5_vp_vsel(voltdm);
@@ -306,6 +314,19 @@ static struct omap_sr_class_data sr1p5_class = {
 	.configure = sr1p5_configure,
 	.class_type = SR_CLASS1P5,
 };
+
+/**
+ * omap_sr_class1p5_busy() - is a SmartReflex/VP loop running?
+ *
+ * A global warm reset in the middle of an SR/VP transaction deadlocks
+ * the two, so SR must be off before a software warm reset [OMAP4470
+ * errata i724]. The restart path does a cold reset instead while this
+ * returns true.
+ */
+bool omap_sr_class1p5_busy(void)
+{
+	return atomic_read(&sr1p5_busy) != 0;
+}
 
 /**
  * omap_sr_class1p5_scaled() - a voltage domain went to another OPP
