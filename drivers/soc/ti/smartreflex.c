@@ -704,6 +704,27 @@ void omap_sr_enable(struct voltagedomain *voltdm)
 }
 
 /**
+ * omap_sr_autocomp_start() - start autocompensation on a voltage domain
+ * @voltdm:	VDD pointer to which the SR module to be started belongs to.
+ *
+ * Does what writing 1 to the autocomp debugfs file does, for a class
+ * driver that starts by itself once the voltage layer is up. Returns 0
+ * if autocompensation is active afterwards, else an error value.
+ */
+int omap_sr_autocomp_start(struct voltagedomain *voltdm)
+{
+	struct omap_sr *sr = _sr_lookup(voltdm);
+
+	if (IS_ERR(sr))
+		return PTR_ERR(sr);
+
+	if (!sr->autocomp_active)
+		sr_start_vddautocomp(sr);
+
+	return sr->autocomp_active ? 0 : -EIO;
+}
+
+/**
  * omap_sr_disable() - API to disable SR without resetting the voltage
  *			processor voltage
  * @voltdm:	VDD pointer to which the SR module to be configured belongs to.

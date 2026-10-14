@@ -159,7 +159,8 @@ int omap_vc_pre_scale(struct voltagedomain *voltdm,
 	}
 
 	*target_vsel = voltdm->pmic->uv_to_vsel(target_volt);
-	*current_vsel = voltdm->pmic->uv_to_vsel(voltdm->nominal_volt);
+	/* The last ON voltage, which is not the nominal one after AVS */
+	*current_vsel = voltdm->pmic->uv_to_vsel(voltdm->vc_param->on);
 
 	/* Setting the ON voltage to the new target voltage */
 	vc_cmdval = voltdm->read(vc->cmdval_reg);

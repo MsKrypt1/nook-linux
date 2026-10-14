@@ -19,12 +19,16 @@
  *			with voltage.
  * @vp_errorgain:	Error gain value for the voltage processor. This
  *			field also differs according to the voltage/opp.
+ * @volt_calibrated:	The voltage in uV that SmartReflex class 1.5
+ *			calibrated for this OPP, or 0 if not calibrated.
+ *			Used instead of @volt_nominal when set.
  */
 struct omap_volt_data {
 	u32	volt_nominal;
 	u32	sr_efuse_offs;
 	u8	sr_errminlimit;
 	u8	vp_errgain;
+	u32	volt_calibrated;
 };
 struct voltagedomain;
 

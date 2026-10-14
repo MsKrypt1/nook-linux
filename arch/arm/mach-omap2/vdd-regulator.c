@@ -107,14 +107,6 @@ static int omap_vdd_probe(struct platform_device *pdev)
 	for (i = 0; i < n; i++)
 		table[i] = voltdm->volt_data[i].volt_nominal;
 
-	/*
-	 * Nothing has scaled the domain yet. The voltage layer sets the VC ON
-	 * command to the voltage the bootloader left on the rail, and the
-	 * SMPS voltage register cannot be read back, so start from that.
-	 */
-	if (!voltdm->nominal_volt)
-		voltdm->nominal_volt = voltdm->vc_param->on;
-
 	vdd->vbb = devm_regulator_get_optional(dev, "vbb");
 	if (IS_ERR(vdd->vbb)) {
 		if (PTR_ERR(vdd->vbb) != -ENODEV)
