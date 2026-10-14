@@ -111,6 +111,24 @@
 		i2c-bus-id = <3>;
 		pullups-disabled;
 	};
+
+	/*
+	 * VDD_MPU: TWL6032 SMPS1. Its voltage register is on the SmartReflex
+	 * I2C, so it is set through the PRM voltage processor.
+	 */
+	vdd_mpu: regulator-vdd-mpu {
+		compatible = "ti,omap-voltdm-regulator";
+		regulator-name = "vdd_mpu";
+		ti,voltdm = "mpu";
+		regulator-min-microvolt = <1037000>;
+		regulator-max-microvolt = <1375000>;
+		regulator-boot-on;
+		regulator-always-on;
+	};
+};
+
+&cpu0 {
+	cpu0-supply = <&vdd_mpu>;
 };
 
 /*
