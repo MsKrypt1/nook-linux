@@ -110,7 +110,8 @@ struct omap_volt_data omap447x_vdd_mpu_volt_data[] = {
 	VOLT_DATA_DEFINE(0, 0, 0, 0),
 };
 
-#define OMAP4470_VDD_IVA_OPP50_UV		950000
+/* SWPU325 Table 2-3 nominal, except NTSB (1.380 V there) */
+#define OMAP4470_VDD_IVA_OPP50_UV		962000
 #define OMAP4470_VDD_IVA_OPP100_UV		1137000
 #define OMAP4470_VDD_IVA_OPPTURBO_UV		1287000
 #define OMAP4470_VDD_IVA_OPPNITRO_UV		1375000
@@ -125,9 +126,13 @@ struct omap_volt_data omap447x_vdd_iva_volt_data[] = {
 	VOLT_DATA_DEFINE(0, 0, 0, 0),
 };
 
-#define OMAP4470_VDD_CORE_OPP50_UV		962000
-#define OMAP4470_VDD_CORE_OPP100_UV		1125000
-#define OMAP4470_VDD_CORE_OPP100_OV_UV		1250000
+/*
+ * SWPU325 Table 2-5 nominal. The third OPP is OPP119, the one u-boot runs
+ * (1.19 V); its n-target is in the fuse the 4460 calls OPP100OV.
+ */
+#define OMAP4470_VDD_CORE_OPP50_UV		980000
+#define OMAP4470_VDD_CORE_OPP100_UV		1126000
+#define OMAP4470_VDD_CORE_OPP100_OV_UV		1190000
 
 struct omap_volt_data omap447x_vdd_core_volt_data[] = {
 	VOLT_DATA_DEFINE(OMAP4470_VDD_CORE_OPP50_UV, OMAP44XX_CONTROL_FUSE_CORE_OPP50, 0xf4, 0x0c),
