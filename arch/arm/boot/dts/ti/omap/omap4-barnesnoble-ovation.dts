@@ -93,10 +93,29 @@
 	};
 };
 
+/*
+ * Keep the GPIO state u-boot set up (rail enables, level shifter). ti-sysc
+ * reads the quirk from the target module, not from the gpio child.
+ */
+&gpio1_target {
+	ti,no-reset-on-init;
+};
+
+&{/ocp/interconnect@48000000/segment@0/target-module@55000} {	/* gpio2 */
+	ti,no-reset-on-init;
+};
+
+&{/ocp/interconnect@48000000/segment@0/target-module@57000} {	/* gpio3 */
+	ti,no-reset-on-init;
+};
+
+&{/ocp/interconnect@48000000/segment@0/target-module@5b000} {	/* gpio5 */
+	ti,no-reset-on-init;
+};
+
 &gpio1 {
 	pinctrl-names = "default";
 	pinctrl-0 = <&gpio1_hog_wkup_pins>;
-	ti,no-reset-on-init;
 
 	twl-ext-fet-disable-hog {
 		gpio-hog;
@@ -109,7 +128,6 @@
 &gpio2 {
 	pinctrl-names = "default";
 	pinctrl-0 = <&gpio2_hog_pins>;
-	ti,no-reset-on-init;
 
 	LS_DCDC_EN {
 		gpio-hog;
@@ -122,7 +140,6 @@
 &gpio3 {
 	pinctrl-names = "default";
 	pinctrl-0 = <&gpio3_hog_pins>;
-	ti,no-reset-on-init;
 
 	LS_OE {
 		gpio-hog;
@@ -130,10 +147,6 @@
 		output-high;
 		line-name = "LS_OE";
 	};
-};
-
-&gpio5 {
-	ti,no-reset-on-init;
 };
 
 &omap4_pmx_wkup {
@@ -488,6 +501,14 @@
  * unused. WDT2 is the one that resets the board.
  */
 &wdt3 {
+	status = "disabled";
+};
+
+/*
+ * The RNG is owned by the secure side on this HS device: its clkctrl clock
+ * is only registered on GP parts (CLKF_SOC_NONSEC).
+ */
+&rng_target {
 	status = "disabled";
 };
 
