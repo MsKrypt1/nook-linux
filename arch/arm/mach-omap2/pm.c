@@ -184,6 +184,10 @@ static int __init omap2_common_pm_late_init_sync(void)
 		/* Voltage domain regulators, e.g. the cpu0-supply for cpufreq */
 		if (cpu_is_omap44xx())
 			omap_vdd_regulator_init();
+
+		/* AVS calibration needs the VC/VP and the PMIC set up */
+		if (cpu_is_omap44xx())
+			omap_sr_class1p5_init();
 	}
 	if (error)
 		pr_warn("%s: pm soc init failed: %i\n", __func__, error);
