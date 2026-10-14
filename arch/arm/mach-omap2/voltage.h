@@ -179,8 +179,10 @@ static inline int omap_vdd_regulator_init(void) { return 0; }
 #ifdef CONFIG_POWER_AVS_OMAP_CLASS1P5
 int omap_sr_class1p5_init(void);
 void omap_sr_class1p5_scaled(struct voltagedomain *voltdm);
+bool omap_sr_class1p5_busy(void);
 #else
 static inline int omap_sr_class1p5_init(void) { return 0; }
 static inline void omap_sr_class1p5_scaled(struct voltagedomain *voltdm) {}
+static inline bool omap_sr_class1p5_busy(void) { return false; }
 #endif
 #endif
