@@ -1613,9 +1613,35 @@ static int omap_i2c_resume(struct device *dev)
 	return 0;
 }
 
+/*
+ * A client that is not frozen (e.g. a power supply changed work) can start a
+ * transfer while the controller suspends. Mark the adapter suspended first:
+ * that waits for a transfer in progress and refuses later ones, instead of
+ * letting them access the idled module (an external abort).
+ */
+static int omap_i2c_suspend_noirq(struct device *dev)
+{
+	struct omap_i2c_dev *omap = dev_get_drvdata(dev);
+
+	i2c_mark_adapter_suspended(&omap->adapter);
+
+	return pm_runtime_force_suspend(dev);
+}
+
+static int omap_i2c_resume_noirq(struct device *dev)
+{
+	struct omap_i2c_dev *omap = dev_get_drvdata(dev);
+	int ret;
+
+	ret = pm_runtime_force_resume(dev);
+	i2c_mark_adapter_resumed(&omap->adapter);
+
+	return ret;
+}
+
 static const struct dev_pm_ops omap_i2c_pm_ops = {
-	NOIRQ_SYSTEM_SLEEP_PM_OPS(pm_runtime_force_suspend,
-				  pm_runtime_force_resume)
+	NOIRQ_SYSTEM_SLEEP_PM_OPS(omap_i2c_suspend_noirq,
+				  omap_i2c_resume_noirq)
 	SYSTEM_SLEEP_PM_OPS(omap_i2c_suspend, omap_i2c_resume)
 	RUNTIME_PM_OPS(omap_i2c_runtime_suspend,
 		       omap_i2c_runtime_resume, NULL)
