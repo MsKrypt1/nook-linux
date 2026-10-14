@@ -94,7 +94,8 @@ struct omap_volt_data omap446x_vdd_core_volt_data[] = {
 	VOLT_DATA_DEFINE(0, 0, 0, 0),
 };
 
-#define OMAP4470_VDD_MPU_OPP50_UV		1025000
+/* SWPU325 Table 2-1 nominal */
+#define OMAP4470_VDD_MPU_OPP50_UV		1037000
 #define OMAP4470_VDD_MPU_OPP100_UV		1200000
 #define OMAP4470_VDD_MPU_OPPTURBO_UV		1312000
 #define OMAP4470_VDD_MPU_OPPNITRO_UV		1375000
