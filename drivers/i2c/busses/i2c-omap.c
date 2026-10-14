@@ -1555,6 +1555,14 @@ static int omap_i2c_runtime_suspend(struct device *dev)
 		omap_i2c_read_reg(omap, OMAP_I2C_STAT_REG);
 	}
 
+	/*
+	 * Interrupts are now disabled in the controller, but a threaded
+	 * handler may still be queued from an earlier interrupt. Let it run
+	 * while the module is clocked: once the module is idled, its register
+	 * reads end in an external abort.
+	 */
+	synchronize_irq(omap->irq);
+
 	pinctrl_pm_select_sleep_state(dev);
 
 	return 0;
