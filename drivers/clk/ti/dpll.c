@@ -34,6 +34,18 @@ static const struct clk_ops dpll_m4xen_ck_ops = {
 	.save_context	= &omap3_core_dpll_save_context,
 	.restore_context = &omap3_core_dpll_restore_context,
 };
+
+static const struct clk_ops omap4470_mpu_dpll_ck_ops = {
+	.enable		= &omap3_noncore_dpll_enable,
+	.disable	= &omap3_noncore_dpll_disable,
+	.recalc_rate	= &omap4470_mpu_dpll_recalc,
+	.set_rate	= &omap4470_mpu_dpll_set_rate,
+	.set_parent	= &omap3_noncore_dpll_set_parent,
+	.determine_rate	= &omap4470_mpu_dpll_determine_rate,
+	.get_parent	= &omap2_init_dpll_parent,
+};
+#else
+static const struct clk_ops omap4470_mpu_dpll_ck_ops = {};
 #endif
 
 #if defined(CONFIG_ARCH_OMAP3) || defined(CONFIG_ARCH_OMAP4) || \
@@ -362,6 +374,21 @@ static void __init of_ti_dpll_setup(struct device_node *node,
 			of_property_read_bool(node, "ti,ssc-downspread");
 	}
 
+#if defined(CONFIG_ARCH_OMAP4) || defined(CONFIG_SOC_OMAP5) || \
+	defined(CONFIG_SOC_DRA7XX)
+	if (dd->flags & DPLL_OMAP4470_MPU) {
+		if (ti_clk_get_reg_addr(node, ssc_clk_index++,
+					&dd->m2_div_reg))
+			goto cleanup;
+
+		if (ti_clk_get_reg_addr(node, ssc_clk_index++,
+					&dd->mpu_clkctrl_reg))
+			goto cleanup;
+
+		clk_hw->ops = &clkhwops_omap4470_mpu_dpll;
+	}
+#endif
+
 	if (of_property_read_bool(node, "ti,low-power-stop"))
 		dpll_mode |= 1 << DPLL_LOW_POWER_STOP;
 
@@ -534,6 +561,26 @@ static void __init of_ti_omap5_mpu_dpll_setup(struct device_node *node)
 }
 CLK_OF_DECLARE(of_ti_omap5_mpu_dpll_clock, "ti,omap5-mpu-dpll-clock",
 	       of_ti_omap5_mpu_dpll_setup);
+
+static void __init of_ti_omap4470_mpu_dpll_setup(struct device_node *node)
+{
+	const struct dpll_data dd = {
+		.idlest_mask = 0x1,
+		.enable_mask = 0x7,
+		.autoidle_mask = 0x7,
+		.mult_mask = 0x7ff << 8,
+		.div1_mask = 0x7f,
+		.max_multiplier = 2047,
+		.max_divider = 128,
+		.min_divider = 1,
+		.modes = (1 << DPLL_LOW_POWER_BYPASS) | (1 << DPLL_LOCKED),
+		.flags = DPLL_OMAP4470_MPU,
+	};
+
+	of_ti_dpll_setup(node, &omap4470_mpu_dpll_ck_ops, &dd);
+}
+CLK_OF_DECLARE(of_ti_omap4470_mpu_dpll_clock, "ti,omap4470-mpu-dpll-clock",
+	       of_ti_omap4470_mpu_dpll_setup);
 
 static void __init of_ti_omap4_core_dpll_setup(struct device_node *node)
 {
