@@ -180,8 +180,13 @@ static irqreturn_t twl6030_irq_thread(int irq, void *data)
 	 * Since VBUS status bit is not reliable for VBUS disconnect
 	 * use CHARGER VBUS detection status bit instead.
 	 */
-	if (sts.bytes[2] & 0x10)
+	if (sts.bytes[2] & 0x10) {
 		sts.bytes[2] |= 0x08;
+		/* With no charger driver it stands only for VBUS */
+		if (!irq_find_mapping(pdata->irq_domain,
+				      pdata->irq_mapping_tbl[20]))
+			sts.bytes[2] &= ~0x10;
+	}
 
 	int_sts = le32_to_cpu(sts.int_sts);
 	for (i = 0; int_sts; int_sts >>= 1, i++)
