@@ -367,10 +367,12 @@
 		status = "okay";
 		compatible = "ti,bq27520g3";
 		reg = <0x55>;
+		/* VBAT for the charger's boost-back fix */
+		power-supplies = <&charger>;
 	};
 
 	/* Battery Charger */
-	charger@6b {
+	charger: charger@6b {
 		status = "okay";
 		compatible = "ti,bq24196";
 		reg = <0x6b>;
