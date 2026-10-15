@@ -158,6 +158,10 @@
 #define BQ24190_REG_VPRS_TS_PROFILE_SHIFT	2
 #define BQ24190_REG_VPRS_DEV_REG_MASK		(BIT(1) | BIT(0))
 #define BQ24190_REG_VPRS_DEV_REG_SHIFT		0
+/* B&N's code reads TS_PROFILE and DEV_REG together as the revision */
+#define BQ24190_REG_VPRS_REV_MASK		(BIT(2) | BIT(1) | BIT(0))
+#define BQ24190_REG_VPRS_REV_PG12		0x1
+#define BQ24190_REG_VPRS_REV_PG13		0x2
 
 /*
  * The tables below provide a 2-way mapping for the value that goes in
@@ -221,6 +225,18 @@ enum bq24190_chip {
 #define BQ24190_WDT_KICK_MS	60000
 
 /*
+ * Boost-back fix for bq24196 PG1.2/1.3, from B&N's vendor code; the erratum
+ * itself is not public.  Below SYS_MIN + 150 mV the system is regulated
+ * there and the BATFET runs in linear mode.  The fix keeps VBAT away from
+ * that threshold: SYS_MIN 3.2 V above 3.4 V VBAT, 3.5 V (the default) below.
+ * Their u-boot also takes the default as safe above 3.65 V VBAT.
+ */
+#define BQ24190_BOOSTBACK_VBAT_UV	3400000
+#define BQ24190_BOOSTBACK_VBAT_MAX_UV	3650000
+#define BQ24190_BOOSTBACK_SYS_MIN_LO	3200
+#define BQ24190_BOOSTBACK_SYS_MIN_HI	3500
+
+/*
  * The FAULT register is latched by the bq24190 (except for NTC_FAULT)
  * so the first read after a fault returns the latched value and subsequent
  * reads return the current value.  In order to return the fault status
@@ -240,6 +256,8 @@ struct bq24190_dev_info {
 	bool				irq_event;
 	bool				suspended;
 	bool				otg_vbus_enabled;
+	bool				boostback;
+	int				vbat;
 	int				charge_type;
 	u16				sys_min;
 	u16				iprechg;
@@ -761,6 +779,82 @@ static int bq24190_register_vbus_regulator(struct bq24190_dev_info *bdi)
 }
 #endif
 
+struct bq24190_vbat {
+	const char	*charger;
+	int		uv;
+};
+
+static int bq24190_vbat_cb(struct power_supply *psy, void *data)
+{
+	struct bq24190_vbat *vb = data;
+	union power_supply_propval val;
+	int i;
+
+	if (psy->desc->type != POWER_SUPPLY_TYPE_BATTERY)
+		return 0;
+
+	for (i = 0; i < psy->num_supplies; i++) {
+		if (!strcmp(psy->supplied_from[i], vb->charger))
+			break;
+	}
+	if (i == psy->num_supplies)
+		return 0;
+
+	if (power_supply_get_property(psy, POWER_SUPPLY_PROP_VOLTAGE_NOW, &val))
+		return 0;
+
+	vb->uv = val.intval;
+	return 1;
+}
+
+/* VBAT in uV from a battery that lists the charger in "power-supplies" */
+static int bq24190_get_vbat(struct bq24190_dev_info *bdi)
+{
+	struct bq24190_vbat vb = { .charger = bdi->charger->desc->name };
+
+	if (power_supply_for_each_psy(&vb, bq24190_vbat_cb) <= 0)
+		return -ENODEV;
+
+	return vb.uv;
+}
+
+static int bq24190_set_sys_min(struct bq24190_dev_info *bdi, u16 sys_min)
+{
+	u8 v = sys_min / 100 - 30; // manual section 9.5.1.2, table 9
+
+	return bq24190_write_mask(bdi, BQ24190_REG_POC,
+				  BQ24190_REG_POC_SYS_MIN_MASK,
+				  BQ24190_REG_POC_SYS_MIN_SHIFT,
+				  v);
+}
+
+/*
+ * The configured SYS_MIN, or with the boost-back fix the one for the
+ * current VBAT.  Called with the WDT armed, so it cannot outlive the host.
+ */
+static int bq24190_update_sys_min(struct bq24190_dev_info *bdi)
+{
+	u16 sys_min = bdi->sys_min;
+	int vbat;
+
+	if (bdi->boostback) {
+		vbat = bq24190_get_vbat(bdi);
+		if (vbat >= 0) {
+			bdi->vbat = vbat;
+			sys_min = vbat > BQ24190_BOOSTBACK_VBAT_UV ?
+				  BQ24190_BOOSTBACK_SYS_MIN_LO :
+				  BQ24190_BOOSTBACK_SYS_MIN_HI;
+			dev_dbg(bdi->dev, "VBAT %d mV: SYS_MIN %u mV\n",
+				vbat / 1000, sys_min);
+		}
+	}
+
+	if (!sys_min)
+		return 0;
+
+	return bq24190_set_sys_min(bdi, sys_min);
+}
+
 /*
  * The I2C watchdog keeps the charger in host mode while the host kicks it.
  * When it expires, the charger drops to default mode: registers reset,
@@ -814,6 +908,8 @@ static void bq24190_wdt_work(struct work_struct *work)
 		error = bq24190_wdt_kick(bdi);
 		if (error < 0)
 			dev_warn(bdi->dev, "Can't kick watchdog: %d\n", error);
+		else if (bdi->boostback)
+			bq24190_update_sys_min(bdi);
 
 		pm_runtime_mark_last_busy(bdi->dev);
 		pm_runtime_put_autosuspend(bdi->dev);
@@ -840,15 +936,9 @@ static int bq24190_set_config(struct bq24190_dev_info *bdi)
 	if (ret < 0)
 		return ret;
 
-	if (bdi->sys_min) {
-		v = bdi->sys_min / 100 - 30; // manual section 9.5.1.2, table 9
-		ret = bq24190_write_mask(bdi, BQ24190_REG_POC,
-					 BQ24190_REG_POC_SYS_MIN_MASK,
-					 BQ24190_REG_POC_SYS_MIN_SHIFT,
-					 v);
-		if (ret < 0)
-			return ret;
-	}
+	ret = bq24190_update_sys_min(bdi);
+	if (ret < 0)
+		return ret;
 
 	if (bdi->iprechg) {
 		v = bdi->iprechg / 128 - 1; // manual section 9.5.1.4, table 11
@@ -1980,6 +2070,19 @@ static int bq24190_check_chip(struct bq24190_dev_info *bdi)
 		return -ENODEV;
 	}
 
+	if (v == BQ24190_REG_VPRS_PN_24192) {
+		ret = bq24190_read(bdi, BQ24190_REG_VPRS, &v);
+		if (ret < 0)
+			return ret;
+
+		v &= BQ24190_REG_VPRS_REV_MASK;
+		bdi->boostback = v == BQ24190_REG_VPRS_REV_PG12 ||
+				 v == BQ24190_REG_VPRS_REV_PG13;
+		if (bdi->boostback)
+			dev_info(bdi->dev, "PG1.%d, boost-back fix on\n",
+				 v == BQ24190_REG_VPRS_REV_PG12 ? 2 : 3);
+	}
+
 	return 0;
 }
 
@@ -2361,6 +2464,42 @@ static __maybe_unused int bq24190_runtime_resume(struct device *dev)
 	return 0;
 }
 
+/*
+ * Default mode means SYS_MIN 3.5 V, which the boost-back fix avoids for
+ * VBAT in 3.4-3.65 V.  In that band, with a supply in, stay in host mode
+ * through the sleep instead: WDT off, SYS_MIN 3.2 V.  Plugging or
+ * unplugging wakes the host, which then decides again.
+ *
+ * VBAT is the last one read while awake, at most a minute old.  Reading
+ * the gauge here can refresh its cache, and the uevent work that queues
+ * then runs after the I2C bus has suspended.
+ */
+static void bq24190_boostback_suspend(struct bq24190_dev_info *bdi)
+{
+	int vbat = bdi->vbat;
+	u8 ss;
+
+	if (!bdi->boostback)
+		return;
+
+	if (bq24190_read(bdi, BQ24190_REG_SS, &ss) < 0 ||
+	    !(ss & BQ24190_REG_SS_PG_STAT_MASK))
+		return;
+
+	if (vbat <= BQ24190_BOOSTBACK_VBAT_UV ||
+	    vbat > BQ24190_BOOSTBACK_VBAT_MAX_UV)
+		return;
+
+	if (bq24190_wdt_set(bdi, 0) < 0 ||
+	    bq24190_set_sys_min(bdi, BQ24190_BOOSTBACK_SYS_MIN_LO) < 0) {
+		dev_warn(bdi->dev, "Can't set up boost-back fix for suspend\n");
+		return;
+	}
+
+	dev_dbg(bdi->dev, "VBAT %d mV: host mode through suspend\n",
+		vbat / 1000);
+}
+
 static __maybe_unused int bq24190_pm_suspend(struct device *dev)
 {
 	struct i2c_client *client = to_i2c_client(dev);
@@ -2380,6 +2519,7 @@ static __maybe_unused int bq24190_pm_suspend(struct device *dev)
 	 * sleeping host; there is no direct way into it.
 	 */
 	bq24190_register_reset(bdi);
+	bq24190_boostback_suspend(bdi);
 
 	if (error >= 0) {
 		pm_runtime_put_autosuspend(bdi->dev);
