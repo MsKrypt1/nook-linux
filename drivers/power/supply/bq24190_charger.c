@@ -249,6 +249,7 @@ struct bq24190_dev_info {
 	u32				vreg;
 	u32				vreg_max;
 	struct mutex			f_reg_lock;
+	struct mutex			rmw_lock;
 	u8				f_reg;
 	u8				ss_reg;
 	u8				watchdog;
@@ -335,14 +336,20 @@ static int bq24190_write_mask(struct bq24190_dev_info *bdi, u8 reg,
 	u8 v;
 	int ret;
 
+	/* Callers: wdt_work, the IRQ thread, sysfs and the VBUS regulator */
+	mutex_lock(&bdi->rmw_lock);
+
 	ret = bq24190_read(bdi, reg, &v);
-	if (ret < 0)
-		return ret;
+	if (ret >= 0) {
+		v &= ~mask;
+		v |= ((data << shift) & mask);
 
-	v &= ~mask;
-	v |= ((data << shift) & mask);
+		ret = bq24190_write(bdi, reg, v);
+	}
 
-	return bq24190_write(bdi, reg, v);
+	mutex_unlock(&bdi->rmw_lock);
+
+	return ret;
 }
 
 static int bq24190_get_field_val(struct bq24190_dev_info *bdi,
@@ -2195,6 +2202,7 @@ static int bq24190_probe(struct i2c_client *client)
 	strscpy(bdi->model_name, id->name, sizeof(bdi->model_name));
 	bdi->info = i2c_get_match_data(client);
 	mutex_init(&bdi->f_reg_lock);
+	mutex_init(&bdi->rmw_lock);
 	bdi->charge_type = POWER_SUPPLY_CHARGE_TYPE_FAST;
 	bdi->f_reg = 0;
 	bdi->ss_reg = BQ24190_REG_SS_VBUS_STAT_MASK; /* impossible state */
