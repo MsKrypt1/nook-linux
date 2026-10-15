@@ -124,6 +124,7 @@
 		regulator-max-microvolt = <1375000>;
 		regulator-boot-on;
 		regulator-always-on;
+		vbb-supply = <&abb_mpu>;
 	};
 };
 
