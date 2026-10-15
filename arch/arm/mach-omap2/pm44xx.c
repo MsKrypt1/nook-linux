@@ -14,6 +14,7 @@
 #include <linux/delay.h>
 #include <linux/err.h>
 #include <linux/slab.h>
+#include <linux/io.h>
 #include <asm/system_misc.h>
 
 #include "soc.h"
@@ -21,6 +22,12 @@
 #include "clockdomain.h"
 #include "powerdomain.h"
 #include "pm.h"
+#include "cm.h"
+#include "cm1_44xx.h"
+#include "cm2_44xx.h"
+#include "cm-regbits-44xx.h"
+#include "prcm44xx.h"
+#include "iomap.h"
 
 u16 pm44xx_errata;
 
@@ -256,6 +263,61 @@ static inline int omap4plus_init_static_deps(const struct static_dep_map *map)
 }
 
 /**
+ * omap4_pm_undo_bootloader_settings - let PRCM state left by u-boot idle
+ *
+ * Older bootloaders (B&N's for the Nook HD+, for one) leave PRCM settings
+ * that keep power domains out of retention and that no kernel driver
+ * clears:
+ *
+ * - DPLL_ABE CLKOUT, CLKOUTX2 and CLKOUTHIF forced on (DPLL_*_GATE_CTRL).
+ *   DPLL_ABE then never stops and the ABE clock domain input clock is
+ *   never gated, so PD_ABE stays ON.
+ * - The CEFUSE module enabled (MODULEMODE). PD_CEFUSE stays ON, and PD_CORE
+ *   then does not reach retention either.
+ *
+ * Clear both, so the hardware can gate the clocks again.
+ */
+static void __init omap4_pm_undo_bootloader_settings(void)
+{
+	void __iomem *reg;
+	u32 v;
+
+	if (!cpu_is_omap44xx())
+		return;
+
+	reg = OMAP44XX_CM1_REGADDR(OMAP4430_CM1_CKGEN_INST,
+				   OMAP4_CM_DIV_M2_DPLL_ABE_OFFSET);
+	v = readl_relaxed(reg);
+	if (v & (OMAP4430_DPLL_CLKOUT_GATE_CTRL_MASK |
+		 OMAP4430_DPLL_CLKOUTX2_GATE_CTRL_MASK)) {
+		pr_info("OMAP4 PM: DPLL_ABE M2 outputs forced on, enabling autogating\n");
+		writel_relaxed(v & ~(OMAP4430_DPLL_CLKOUT_GATE_CTRL_MASK |
+				     OMAP4430_DPLL_CLKOUTX2_GATE_CTRL_MASK), reg);
+	}
+
+	reg = OMAP44XX_CM1_REGADDR(OMAP4430_CM1_CKGEN_INST,
+				   OMAP4_CM_DIV_M3_DPLL_ABE_OFFSET);
+	v = readl_relaxed(reg);
+	if (v & OMAP4430_DPLL_CLKOUTHIF_GATE_CTRL_MASK) {
+		pr_info("OMAP4 PM: DPLL_ABE M3 output forced on, enabling autogating\n");
+		writel_relaxed(v & ~OMAP4430_DPLL_CLKOUTHIF_GATE_CTRL_MASK, reg);
+	}
+
+	reg = OMAP44XX_CM2_REGADDR(OMAP4430_CM2_CEFUSE_INST,
+				   OMAP4_CM_CEFUSE_CEFUSE_CLKCTRL_OFFSET);
+	if (readl_relaxed(reg) & OMAP4430_MODULEMODE_MASK) {
+		pr_info("OMAP4 PM: CEFUSE module left enabled, disabling it\n");
+		omap_cm_module_disable(OMAP4430_CM2_PARTITION,
+				       OMAP4430_CM2_CEFUSE_INST,
+				       OMAP4_CM_CEFUSE_CEFUSE_CLKCTRL_OFFSET);
+		if (omap_cm_wait_module_idle(OMAP4430_CM2_PARTITION,
+					     OMAP4430_CM2_CEFUSE_INST,
+					     OMAP4_CM_CEFUSE_CEFUSE_CLKCTRL_OFFSET, 0))
+			pr_warn("OMAP4 PM: CEFUSE module did not disable\n");
+	}
+}
+
+/**
  * omap4_pm_init_early - Does early initialization necessary for OMAP4+ devices
  *
  * Initializes basic stuff for power management functionality.
@@ -297,6 +359,8 @@ int __init omap4_pm_init(void)
 	 */
 	if (cpu_is_omap44xx())
 		pr_debug("OMAP4 PM: u-boot >= v2012.07 is required for full PM support\n");
+
+	omap4_pm_undo_bootloader_settings();
 
 	ret = pwrdm_for_each(pwrdms_setup, NULL);
 	if (ret) {
