@@ -578,13 +578,15 @@ static int ti_abb_init_table(struct device *dev, struct ti_abb *abb,
 
 		efuse_val = readl(abb->efuse_base + efuse_offset);
 
-		/* Use ABB recommendation from Efuse */
+		/*
+		 * Use ABB recommendation from Efuse. Without one, keep the
+		 * table's mode: OMAP4470 OPP_NITRO is RBB when trimmed and
+		 * FBB otherwise (TRM SWPU270T Table 3-363).
+		 */
 		if (efuse_val & rbb_mask)
 			info->opp_sel = TI_ABB_SLOW_OPP;
 		else if (efuse_val & fbb_mask)
 			info->opp_sel = TI_ABB_FAST_OPP;
-		else if (rbb_mask || fbb_mask)
-			info->opp_sel = TI_ABB_NOMINAL_OPP;
 
 		dev_dbg(dev,
 			"[%d]v=%d efusev=0x%x final ABB=%d\n",
