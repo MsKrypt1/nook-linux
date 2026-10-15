@@ -10,6 +10,12 @@ TWL6030 USB COMPARATOR
  - usb-supply : phandle to the regulator device tree node. It should be vusb
    if it is twl6030 or ldousb if it is twl6032 subclass.
 
+Optional properties, for USB charger detection by an OMAP4 USB2 PHY:
+ - syscon-chgdet : phandle to the control module syscon and the offset of
+   CONTROL_USB2PHYCORE in it.
+ - phys : phandle to the USB2 PHY.
+ - phy-names : "usb2-phy".
+
 twl6030-usb {
 	compatible = "ti,twl6030-usb";
 	interrupts = < 4 10 >;
