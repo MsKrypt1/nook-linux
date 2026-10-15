@@ -1624,6 +1624,9 @@ static void bq24190_input_current_limit_work(struct work_struct *work)
 	union power_supply_propval val;
 	int ret;
 
+	if (bdi->suspended)
+		return;
+
 	ret = power_supply_get_property_from_supplier(bdi->charger,
 						      POWER_SUPPLY_PROP_CURRENT_MAX,
 						      &val);
@@ -1648,7 +1651,12 @@ static void bq24190_charger_external_power_changed(struct power_supply *psy)
 	 * hooked up when using external charger detection) resulting in a
 	 * too low default 500mA iinlim. Delay setting the input-current-limit
 	 * for 300ms to avoid this.
+	 *
+	 * bq24190_pm_resume() calls this again after its register reset.
 	 */
+	if (bdi->suspended)
+		return;
+
 	queue_delayed_work(system_wq, &bdi->input_current_limit_work,
 			   msecs_to_jiffies(300));
 }
@@ -1982,6 +1990,7 @@ static void bq24190_check_status(struct bq24190_dev_info *bdi)
 			ret = bq24190_set_config(bdi);
 			if (ret < 0)
 				dev_err(bdi->dev, "Can't reconfigure: %d\n", ret);
+			bq24190_charger_external_power_changed(bdi->charger);
 		}
 	}
 
@@ -2526,6 +2535,7 @@ static __maybe_unused int bq24190_pm_suspend(struct device *dev)
 
 	bdi->suspended = true;
 	cancel_delayed_work_sync(&bdi->wdt_work);
+	cancel_delayed_work_sync(&bdi->input_current_limit_work);
 
 	error = pm_runtime_resume_and_get(bdi->dev);
 	if (error < 0)
@@ -2571,6 +2581,8 @@ static __maybe_unused int bq24190_pm_resume(struct device *dev)
 	bq24190_configure_usb_otg(bdi, bdi->ss_reg);
 	queue_delayed_work(system_wq, &bdi->wdt_work,
 			   msecs_to_jiffies(BQ24190_WDT_KICK_MS));
+	/* The reset dropped the input current limit */
+	bq24190_charger_external_power_changed(bdi->charger);
 
 	if (error >= 0) {
 		pm_runtime_mark_last_busy(bdi->dev);
