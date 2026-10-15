@@ -27,6 +27,23 @@ properties:
       Phandle to the VUSB regulator. For TWL6030, this should be the 'vusb'
       regulator. For TWL6032 subclass, it should be the 'ldousb' regulator.
 
+  syscon-chgdet:
+    description:
+      For USB charger detection by an OMAP4 USB2 PHY, the control module
+      syscon and the offset of CONTROL_USB2PHYCORE in it.
+    $ref: /schemas/types.yaml#/definitions/phandle-array
+    items:
+      - items:
+          - description: phandle to the control module syscon
+          - description: offset of CONTROL_USB2PHYCORE
+
+  phys:
+    maxItems: 1
+    description: The USB2 PHY, for charger detection.
+
+  phy-names:
+    const: usb2-phy
+
 required:
   - compatible
   - interrupts
