@@ -2076,16 +2076,12 @@ static int sysc_clockdomain_init(struct sysc *ddata)
 	if (!pdata || !pdata->init_clockdomain)
 		return 0;
 
-	switch (ddata->nr_clocks) {
-	case 2:
-		ick = ddata->clocks[SYSC_ICK];
-		fallthrough;
-	case 1:
-		fck = ddata->clocks[SYSC_FCK];
-		break;
-	case 0:
+	/* sysc_get_clocks() always adds the fck and ick slots, see SYSC_OPTFCK0 */
+	if (!ddata->clocks)
 		return 0;
-	}
+
+	fck = ddata->clocks[SYSC_FCK];
+	ick = ddata->clocks[SYSC_ICK];
 
 	error = pdata->init_clockdomain(ddata->dev, fck, ick, &ddata->cookie);
 	if (!error || error == -ENODEV)
