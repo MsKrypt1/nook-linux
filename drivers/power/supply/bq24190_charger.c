@@ -88,6 +88,7 @@
 #define BQ24190_REG_CTTC_TERM_STAT_SHIFT	6
 #define BQ24190_REG_CTTC_WATCHDOG_MASK		(BIT(5) | BIT(4))
 #define BQ24190_REG_CTTC_WATCHDOG_SHIFT		4
+#define BQ24190_REG_CTTC_WATCHDOG_160S		0x3
 #define BQ24190_REG_CTTC_EN_TIMER_MASK		BIT(3)
 #define BQ24190_REG_CTTC_EN_TIMER_SHIFT		3
 #define BQ24190_REG_CTTC_CHG_TIMER_MASK		(BIT(2) | BIT(1))
@@ -214,6 +215,12 @@ enum bq24190_chip {
 };
 
 /*
+ * Kick period for the I2C watchdog, which is set to 160 s while the host is
+ * awake (136 s minimum with REGN on; the clock is cruder in HIZ).
+ */
+#define BQ24190_WDT_KICK_MS	60000
+
+/*
  * The FAULT register is latched by the bq24190 (except for NTC_FAULT)
  * so the first read after a fault returns the latched value and subsequent
  * reads return the current value.  In order to return the fault status
@@ -227,9 +234,11 @@ struct bq24190_dev_info {
 	struct power_supply		*charger;
 	struct power_supply		*battery;
 	struct delayed_work		input_current_limit_work;
+	struct delayed_work		wdt_work;
 	char				model_name[I2C_NAME_SIZE];
 	bool				initialized;
 	bool				irq_event;
+	bool				suspended;
 	bool				otg_vbus_enabled;
 	int				charge_type;
 	u16				sys_min;
@@ -745,6 +754,68 @@ static int bq24190_register_vbus_regulator(struct bq24190_dev_info *bdi)
 }
 #endif
 
+/*
+ * The I2C watchdog keeps the charger in host mode while the host kicks it.
+ * When it expires, the charger drops to default mode: registers reset,
+ * REG09[7] set and an INT pulse.  A kick is two writes of REG01[6].
+ */
+static int bq24190_wdt_kick(struct bq24190_dev_info *bdi)
+{
+	int i, ret;
+
+	for (i = 0; i < 2; i++) {
+		ret = bq24190_write_mask(bdi, BQ24190_REG_POC,
+				BQ24190_REG_POC_WDT_RESET_MASK,
+				BQ24190_REG_POC_WDT_RESET_SHIFT,
+				0x1);
+		if (ret < 0)
+			return ret;
+	}
+
+	return 0;
+}
+
+/* Changing the timeout does not restart the count, so kick around it. */
+static int bq24190_wdt_set(struct bq24190_dev_info *bdi, u8 timeout)
+{
+	int ret;
+
+	ret = bq24190_wdt_kick(bdi);
+	if (ret < 0)
+		return ret;
+
+	ret = bq24190_write_mask(bdi, BQ24190_REG_CTTC,
+			BQ24190_REG_CTTC_WATCHDOG_MASK,
+			BQ24190_REG_CTTC_WATCHDOG_SHIFT,
+			timeout);
+	if (ret < 0)
+		return ret;
+
+	return bq24190_wdt_kick(bdi);
+}
+
+static void bq24190_wdt_work(struct work_struct *work)
+{
+	struct bq24190_dev_info *bdi =
+		container_of(work, struct bq24190_dev_info, wdt_work.work);
+	int error;
+
+	error = pm_runtime_resume_and_get(bdi->dev);
+	if (error < 0) {
+		dev_warn(bdi->dev, "pm_runtime_get failed: %i\n", error);
+	} else {
+		error = bq24190_wdt_kick(bdi);
+		if (error < 0)
+			dev_warn(bdi->dev, "Can't kick watchdog: %d\n", error);
+
+		pm_runtime_mark_last_busy(bdi->dev);
+		pm_runtime_put_autosuspend(bdi->dev);
+	}
+
+	queue_delayed_work(system_percpu_wq, &bdi->wdt_work,
+			   msecs_to_jiffies(BQ24190_WDT_KICK_MS));
+}
+
 static int bq24190_set_config(struct bq24190_dev_info *bdi)
 {
 	int ret;
@@ -754,13 +825,11 @@ static int bq24190_set_config(struct bq24190_dev_info *bdi)
 	 * According to the "Host Mode and default Mode" section of the
 	 * manual, a write to any register causes the bq24190 to switch
 	 * from default mode to host mode.  It will switch back to default
-	 * mode after a WDT timeout unless the WDT is turned off as well.
-	 * So, by simply turning off the WDT, we accomplish both with the
-	 * same write.
+	 * mode after a WDT timeout.  Keep the WDT armed and kick it from
+	 * wdt_work, so the charger runs on its own again once the host
+	 * stops kicking: in suspend, or when the host hangs.
 	 */
-	ret = bq24190_write_mask(bdi, BQ24190_REG_CTTC,
-				 BQ24190_REG_CTTC_WATCHDOG_MASK,
-				 BQ24190_REG_CTTC_WATCHDOG_SHIFT, 0);
+	ret = bq24190_wdt_set(bdi, BQ24190_REG_CTTC_WATCHDOG_160S);
 	if (ret < 0)
 		return ret;
 
@@ -836,6 +905,14 @@ static int bq24190_register_reset(struct bq24190_dev_info *bdi)
 	 */
 	if (device_property_read_bool(bdi->dev, "disable-reset"))
 		return 0;
+
+	/*
+	 * The reset sets the default 40 s WDT timeout but does not restart
+	 * the count, so kick first or it may expire right away.
+	 */
+	ret = bq24190_wdt_kick(bdi);
+	if (ret < 0)
+		return ret;
 
 	/* Reset the registers */
 	ret = bq24190_write_mask(bdi, BQ24190_REG_POC,
@@ -1776,6 +1853,23 @@ static void bq24190_check_status(struct bq24190_dev_info *bdi)
 		}
 	} while (f_reg && ++i < 2);
 
+	/*
+	 * REG09[7] means the charger is in default mode: its WDT expired.
+	 * That is expected after a suspend.  While awake it means the
+	 * kicks stopped and the registers are back to their defaults.
+	 */
+	if (f_reg & BQ24190_REG_F_WATCHDOG_FAULT_MASK) {
+		f_reg &= ~BQ24190_REG_F_WATCHDOG_FAULT_MASK;
+		if (bdi->suspended) {
+			dev_dbg(bdi->dev, "charger in default mode\n");
+		} else {
+			dev_warn(bdi->dev, "watchdog expired, reconfiguring\n");
+			ret = bq24190_set_config(bdi);
+			if (ret < 0)
+				dev_err(bdi->dev, "Can't reconfigure: %d\n", ret);
+		}
+	}
+
 	/* ignore over/under voltage fault after disconnect */
 	if (f_reg == (1 << BQ24190_REG_F_CHRG_FAULT_SHIFT) &&
 	    !(ss_reg & BQ24190_REG_SS_PG_STAT_MASK))
@@ -1820,6 +1914,14 @@ static void bq24190_check_status(struct bq24190_dev_info *bdi)
 			alert_charger = true;
 		bdi->ss_reg = ss_reg;
 	}
+
+	/*
+	 * power_supply_changed_work runs on a non-freezable workqueue and
+	 * would read the charger over I2C in the noirq phase of a suspend.
+	 * bq24190_pm_resume() reports the state instead.
+	 */
+	if (bdi->suspended)
+		alert_charger = alert_battery = false;
 
 	if (alert_charger || alert_battery) {
 		power_supply_changed(bdi->charger);
@@ -2084,6 +2186,7 @@ static int bq24190_probe(struct i2c_client *client)
 					   bq24190_input_current_limit_work);
 	if (ret)
 		return ret;
+	INIT_DELAYED_WORK(&bdi->wdt_work, bq24190_wdt_work);
 
 	i2c_set_clientdata(client, bdi);
 
@@ -2168,7 +2271,12 @@ static int bq24190_probe(struct i2c_client *client)
 	if (ret < 0)
 		goto out_charger;
 
-	enable_irq_wake(client->irq);
+	/*
+	 * No unconditional wake IRQ: the WDT expiry in suspend pulses INT.
+	 * With "wakeup-source" the I2C core sets the IRQ up as a wakeup.
+	 */
+	queue_delayed_work(system_percpu_wq, &bdi->wdt_work,
+			   msecs_to_jiffies(BQ24190_WDT_KICK_MS));
 
 	pm_runtime_put_autosuspend(dev);
 
@@ -2191,6 +2299,7 @@ static void bq24190_remove(struct i2c_client *client)
 	struct bq24190_dev_info *bdi = i2c_get_clientdata(client);
 	int error;
 
+	cancel_delayed_work_sync(&bdi->wdt_work);
 	error = pm_runtime_resume_and_get(bdi->dev);
 	if (error < 0)
 		dev_warn(bdi->dev, "pm_runtime_get failed: %i\n", error);
@@ -2208,6 +2317,8 @@ static void bq24190_remove(struct i2c_client *client)
 static void bq24190_shutdown(struct i2c_client *client)
 {
 	struct bq24190_dev_info *bdi = i2c_get_clientdata(client);
+
+	cancel_delayed_work_sync(&bdi->wdt_work);
 
 	/* Turn off 5V boost regulator on shutdown */
 	bdi->info->set_otg_vbus(bdi, false);
@@ -2248,10 +2359,18 @@ static __maybe_unused int bq24190_pm_suspend(struct device *dev)
 	struct bq24190_dev_info *bdi = i2c_get_clientdata(client);
 	int error;
 
+	bdi->suspended = true;
+	cancel_delayed_work_sync(&bdi->wdt_work);
+
 	error = pm_runtime_resume_and_get(bdi->dev);
 	if (error < 0)
 		dev_warn(bdi->dev, "pm_runtime_get failed: %i\n", error);
 
+	/*
+	 * Back to the defaults, 40 s WDT included.  With no more kicks the
+	 * charger then drops to default mode, the autonomous charger for a
+	 * sleeping host; there is no direct way into it.
+	 */
 	bq24190_register_reset(bdi);
 
 	if (error >= 0) {
@@ -2274,9 +2393,17 @@ static __maybe_unused int bq24190_pm_resume(struct device *dev)
 	if (error < 0)
 		dev_warn(bdi->dev, "pm_runtime_get failed: %i\n", error);
 
+	/* Read the faults before the reset below returns to host mode */
+	bq24190_check_status(bdi);
+
 	bq24190_register_reset(bdi);
 	bq24190_set_config(bdi);
 	bq24190_read(bdi, BQ24190_REG_SS, &bdi->ss_reg);
+
+	bdi->suspended = false;
+	bq24190_configure_usb_otg(bdi, bdi->ss_reg);
+	queue_delayed_work(system_percpu_wq, &bdi->wdt_work,
+			   msecs_to_jiffies(BQ24190_WDT_KICK_MS));
 
 	if (error >= 0) {
 		pm_runtime_put_autosuspend(bdi->dev);
