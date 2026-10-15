@@ -469,6 +469,16 @@ static int omap4_clkdm_clk_disable(struct clockdomain *clkdm)
 
 	if (!hwsup && (clkdm->flags & CLKDM_CAN_FORCE_SLEEP))
 		omap4_clkdm_sleep(clkdm);
+	/*
+	 * A clockdomain that can be force-woken but not force-slept, such
+	 * as l4_ao, stays in SW_WKUP after omap4_clkdm_clk_enable() unless
+	 * something puts it back. A clock enabled outside a clkdm_deny_idle()
+	 * section (SmartReflex's fck) then keeps the clockdomain awake for
+	 * good. Return it to hardware-supervised idle unless idle is denied.
+	 */
+	else if (!hwsup && (clkdm->flags & CLKDM_CAN_ENABLE_AUTO) &&
+		 !clkdm->forcewake_count)
+		omap4_clkdm_allow_idle(clkdm);
 
 	return 0;
 }
