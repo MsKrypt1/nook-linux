@@ -29,6 +29,8 @@
 #define BQ24190_REG_ISC_VINDPM_SHIFT		3
 #define BQ24190_REG_ISC_IINLIM_MASK		(BIT(2) | BIT(1) | BIT(0))
 #define BQ24190_REG_ISC_IINLIM_SHIFT		0
+/* The IINLIM bits a REG00 write clears on the bq24196 PG1.3 */
+#define BQ24190_REG_ISC_IINLIM_LOST_MASK	(BIT(1) | BIT(0))
 
 #define BQ24190_REG_POC		0x01 /* Power-On Configuration */
 #define BQ24190_REG_POC_RESET_MASK		BIT(7)
@@ -258,6 +260,7 @@ struct bq24190_dev_info {
 	bool				suspended;
 	bool				otg_vbus_enabled;
 	bool				boostback;
+	bool				iinlim_quirk;
 	bool				psel_adapter;
 	struct gpio_desc		*psel;
 	int				vbat;
@@ -369,6 +372,15 @@ static int bq24190_write_mask(struct bq24190_dev_info *bdi, u8 reg,
 		v |= ((data << shift) & mask);
 
 		ret = bq24190_write(bdi, reg, v);
+	}
+
+	/* See bq24190_charger_set_iinlimit() */
+	if (ret >= 0 && reg == BQ24190_REG_ISC && bdi->iinlim_quirk &&
+	    (v & BQ24190_REG_ISC_IINLIM_LOST_MASK)) {
+		ret = bq24190_read(bdi, BQ24190_REG_MOC, &v);
+		if (ret >= 0)
+			ret = bq24190_write(bdi, BQ24190_REG_MOC,
+					    v | BQ24190_REG_MOC_DPDM_EN_MASK);
 	}
 
 	mutex_unlock(&bdi->rmw_lock);
@@ -1500,14 +1512,32 @@ static int bq24190_set_psel(struct bq24190_dev_info *bdi, bool adapter)
 	return bq24190_detect_iinlim(bdi);
 }
 
+/*
+ * bq24196 PG1.3 (from B&N's code, not in the datasheet): a REG00 write
+ * clears IINLIM[1:0], so I2C can set only 100 mA and 1.2 A.  The detection
+ * restores the PSEL/OTG default, 500 mA for a USB host or 3 A for an
+ * adapter, and bq24190_write_mask() reruns it after any REG00 write that
+ * clears a set bit.  Take the highest of the three within the request.
+ */
 static int bq24190_charger_set_iinlimit(struct bq24190_dev_info *bdi,
 		const union power_supply_propval *val)
 {
+	int lim = val->intval;
+
+	if (bdi->iinlim_quirk) {
+		int def = bdi->psel_adapter ? 3000000 : 500000;
+		int i2c = lim >= 1200000 ? 1200000 : 100000;
+
+		if (lim >= def && def > i2c)
+			return bq24190_detect_iinlim(bdi);
+		lim = i2c;
+	}
+
 	return bq24190_set_field_val(bdi, BQ24190_REG_ISC,
 			BQ24190_REG_ISC_IINLIM_MASK,
 			BQ24190_REG_ISC_IINLIM_SHIFT,
 			bq24190_isc_iinlim_values,
-			ARRAY_SIZE(bq24190_isc_iinlim_values), val->intval);
+			ARRAY_SIZE(bq24190_isc_iinlim_values), lim);
 }
 
 static int bq24190_charger_get_property(struct power_supply *psy,
@@ -2152,9 +2182,11 @@ static int bq24190_check_chip(struct bq24190_dev_info *bdi)
 		v &= BQ24190_REG_VPRS_REV_MASK;
 		bdi->boostback = v == BQ24190_REG_VPRS_REV_PG12 ||
 				 v == BQ24190_REG_VPRS_REV_PG13;
+		bdi->iinlim_quirk = v == BQ24190_REG_VPRS_REV_PG13;
 		if (bdi->boostback)
-			dev_info(bdi->dev, "PG1.%d, boost-back fix on\n",
-				 v == BQ24190_REG_VPRS_REV_PG12 ? 2 : 3);
+			dev_info(bdi->dev, "PG1.%d, boost-back fix on%s\n",
+				 v == BQ24190_REG_VPRS_REV_PG12 ? 2 : 3,
+				 bdi->iinlim_quirk ? ", IINLIM quirk" : "");
 	}
 
 	return 0;
