@@ -62,6 +62,7 @@ Optional Properties:
 		'ABB mode' is force set to FBB mode if value at "efuse-address"
 		+ efuse maps to FBB mask (valid only if RBB mask does not match)
 		Set to 0 to ignore this.
+	If neither mask matches, 'ABB mode' from the table applies.
 	Vset value efuse Mask:	Mandatory if ldo-address is set. Picks up from
 		efuse the value to set in 'ti,ldovbb-vset-mask' at ldo-address.
 
