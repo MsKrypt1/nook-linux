@@ -7,11 +7,16 @@
  * Author: Hema HK <hemahk@ti.com>
  */
 
+#include <linux/bitfield.h>
 #include <linux/module.h>
 #include <linux/init.h>
 #include <linux/interrupt.h>
 #include <linux/platform_device.h>
 #include <linux/io.h>
+#include <linux/mfd/syscon.h>
+#include <linux/phy/phy.h>
+#include <linux/power_supply.h>
+#include <linux/regmap.h>
 #include <linux/usb/musb.h>
 #include <linux/usb/phy_companion.h>
 #include <linux/phy/omap_usb.h>
@@ -75,6 +80,15 @@
 #define CONTROLLER_STAT1		0x03
 #define	VBUS_DET			BIT(2)
 
+/* OMAP4 CONTROL_USB2PHYCORE: the USB2 PHY's charger detection */
+#define USB2PHY_DISCHGDET		BIT(30)
+#define USB2PHY_CHG_DET_STATUS		GENMASK(23, 21)
+#define USB2PHY_CHG_DET_WAIT		0
+#define USB2PHY_CHG_DET_DEDICATED	4
+#define USB2PHY_CHG_DET_HOST		5
+#define USB2PHY_CHG_DET_PC		6
+#define USB2PHY_RESTARTCHGDET		BIT(15)
+
 struct twl6030_usb {
 	struct phy_companion	comparator;
 	struct device		*dev;
@@ -95,6 +109,13 @@ struct twl6030_usb {
 	enum musb_vbus_id_status linkstat;
 	u8			asleep;
 	bool			vbus_enable;
+
+	/* charger detection, optional */
+	struct phy		*phy;
+	struct regmap		*chgdet;
+	unsigned int		chgdet_reg;
+	struct power_supply	*psy;
+	enum power_supply_usb_type usb_type;
 };
 
 #define	comparator_to_twl(x) container_of((x), struct twl6030_usb, comparator)
@@ -202,6 +223,139 @@ static struct attribute *twl6030_attrs[] = {
 };
 ATTRIBUTE_GROUPS(twl6030);
 
+/*
+ * BC1.2 detection by the OMAP4 USB2 PHY, as in TI's 3.0 kernel.  It runs
+ * while the PHY is powered; restart it for this VBUS session.  Run it
+ * before musb sees VBUS, as BC1.2 wants detection before connecting.
+ */
+static void twl6030_usb_charger_detect(struct twl6030_usb *twl)
+{
+	enum power_supply_usb_type type = POWER_SUPPLY_USB_TYPE_UNKNOWN;
+	unsigned int v = 0;
+	int ret;
+
+	ret = phy_init(twl->phy);
+	if (ret)
+		goto out;
+	ret = phy_power_on(twl->phy);
+	if (ret)
+		goto exit;
+
+	regmap_update_bits(twl->chgdet, twl->chgdet_reg,
+			   USB2PHY_DISCHGDET | USB2PHY_RESTARTCHGDET,
+			   USB2PHY_RESTARTCHGDET);
+	usleep_range(2000, 3000);
+	regmap_clear_bits(twl->chgdet, twl->chgdet_reg, USB2PHY_RESTARTCHGDET);
+
+	ret = regmap_read_poll_timeout(twl->chgdet, twl->chgdet_reg, v,
+			FIELD_GET(USB2PHY_CHG_DET_STATUS, v) !=
+			USB2PHY_CHG_DET_WAIT, 20000, 2000000);
+	if (!ret) {
+		switch (FIELD_GET(USB2PHY_CHG_DET_STATUS, v)) {
+		case USB2PHY_CHG_DET_DEDICATED:
+			type = POWER_SUPPLY_USB_TYPE_DCP;
+			break;
+		case USB2PHY_CHG_DET_HOST:
+			type = POWER_SUPPLY_USB_TYPE_CDP;
+			break;
+		case USB2PHY_CHG_DET_PC:
+			type = POWER_SUPPLY_USB_TYPE_SDP;
+			break;
+		}
+	}
+
+	phy_power_off(twl->phy);
+exit:
+	phy_exit(twl->phy);
+out:
+	if (ret)
+		dev_warn(twl->dev, "charger detection failed: %d\n", ret);
+	dev_dbg(twl->dev, "charger detection: USB2PHYCORE 0x%08x\n", v);
+	twl->usb_type = type;
+}
+
+static int twl6030_usb_psy_get_prop(struct power_supply *psy,
+				    enum power_supply_property psp,
+				    union power_supply_propval *val)
+{
+	struct twl6030_usb *twl = power_supply_get_drvdata(psy);
+
+	switch (psp) {
+	case POWER_SUPPLY_PROP_ONLINE:
+		val->intval = twl->linkstat == MUSB_VBUS_VALID;
+		break;
+	case POWER_SUPPLY_PROP_USB_TYPE:
+		val->intval = twl->linkstat == MUSB_VBUS_VALID ?
+			      twl->usb_type : POWER_SUPPLY_USB_TYPE_UNKNOWN;
+		break;
+	case POWER_SUPPLY_PROP_CURRENT_MAX:
+		if (twl->linkstat != MUSB_VBUS_VALID)
+			val->intval = 500000;
+		else if (twl->usb_type == POWER_SUPPLY_USB_TYPE_DCP)
+			val->intval = 2000000;
+		else if (twl->usb_type == POWER_SUPPLY_USB_TYPE_CDP)
+			val->intval = 1500000;
+		else
+			val->intval = 500000;
+		break;
+	default:
+		return -EINVAL;
+	}
+
+	return 0;
+}
+
+static const enum power_supply_property twl6030_usb_psy_props[] = {
+	POWER_SUPPLY_PROP_ONLINE,
+	POWER_SUPPLY_PROP_USB_TYPE,
+	POWER_SUPPLY_PROP_CURRENT_MAX,
+};
+
+static const struct power_supply_desc twl6030_usb_psy_desc = {
+	.name = "twl6030-usb",
+	.type = POWER_SUPPLY_TYPE_USB,
+	.usb_types = BIT(POWER_SUPPLY_USB_TYPE_SDP) |
+		     BIT(POWER_SUPPLY_USB_TYPE_DCP) |
+		     BIT(POWER_SUPPLY_USB_TYPE_CDP) |
+		     BIT(POWER_SUPPLY_USB_TYPE_UNKNOWN),
+	.properties = twl6030_usb_psy_props,
+	.num_properties = ARRAY_SIZE(twl6030_usb_psy_props),
+	.get_property = twl6030_usb_psy_get_prop,
+};
+
+static int twl6030_usb_charger_init(struct twl6030_usb *twl)
+{
+	struct power_supply_config psy_cfg = {
+		.drv_data = twl,
+		.fwnode = dev_fwnode(twl->dev),
+	};
+	struct device *dev = twl->dev;
+	unsigned int args;
+
+	twl->chgdet = syscon_regmap_lookup_by_phandle_args(dev->of_node,
+						"syscon-chgdet", 1, &args);
+	if (IS_ERR(twl->chgdet)) {
+		if (PTR_ERR(twl->chgdet) == -ENOENT)
+			return 0;
+		return dev_err_probe(dev, PTR_ERR(twl->chgdet),
+				     "Can't get syscon-chgdet\n");
+	}
+	twl->chgdet_reg = args;
+
+	twl->phy = devm_phy_get(dev, "usb2-phy");
+	if (IS_ERR(twl->phy))
+		return dev_err_probe(dev, PTR_ERR(twl->phy),
+				     "Can't get the USB2 PHY\n");
+
+	twl->psy = devm_power_supply_register(dev, &twl6030_usb_psy_desc,
+					      &psy_cfg);
+	if (IS_ERR(twl->psy))
+		return dev_err_probe(dev, PTR_ERR(twl->psy),
+				     "Can't register power supply\n");
+
+	return 0;
+}
+
 static irqreturn_t twl6030_usb_irq(int irq, void *_twl)
 {
 	struct twl6030_usb *twl = _twl;
@@ -218,6 +372,9 @@ static irqreturn_t twl6030_usb_irq(int irq, void *_twl)
 			ret = regulator_enable(twl->usb3v3);
 			if (ret)
 				dev_err(twl->dev, "Failed to enable usb3v3\n");
+
+			if (twl->psy && twl->linkstat != MUSB_VBUS_VALID)
+				twl6030_usb_charger_detect(twl);
 
 			twl->asleep = 1;
 			status = MUSB_VBUS_VALID;
@@ -240,6 +397,8 @@ static irqreturn_t twl6030_usb_irq(int irq, void *_twl)
 		}
 	}
 	sysfs_notify(&twl->dev->kobj, NULL, "vbus");
+	if (twl->psy && status != MUSB_UNKNOWN)
+		power_supply_changed(twl->psy);
 
 	return IRQ_HANDLED;
 }
@@ -373,6 +532,10 @@ static int twl6030_usb_probe(struct platform_device *pdev)
 
 	platform_set_drvdata(pdev, twl);
 
+	err = twl6030_usb_charger_init(twl);
+	if (err)
+		goto err_put_regulator_noirq;
+
 	INIT_WORK(&twl->set_vbus_work, otg_set_vbus_work);
 	INIT_DELAYED_WORK(&twl->get_status_work, twl6030_status_work);
 
@@ -407,6 +570,11 @@ err_put_regulator:
 	regulator_put(twl->usb3v3);
 
 	return status;
+
+err_put_regulator_noirq:
+	regulator_put(twl->usb3v3);
+
+	return err;
 }
 
 static void twl6030_usb_remove(struct platform_device *pdev)
