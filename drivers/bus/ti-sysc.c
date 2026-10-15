@@ -2881,6 +2881,33 @@ static int sysc_init_match(struct sysc *ddata)
 	return 0;
 }
 
+/*
+ * Modules kept active from init until their deferred idle. Their clocks and
+ * clockdomains stay awake until then, so the SoC can't reach its deeper
+ * power states (on OMAP4, PD_CORE retention). Say when that starts and ends.
+ */
+#define SYSC_IDLE_DELAY		3000	/* jiffies */
+static atomic_t sysc_idle_pending = ATOMIC_INIT(0);
+static atomic_t sysc_idle_done = ATOMIC_INIT(0);
+
+static void sysc_defer_idle(struct sysc *ddata)
+{
+	if (atomic_inc_return(&sysc_idle_pending) == 1)
+		pr_info("ti-sysc: keeping modules active from init for %u ms, their clockdomains can't idle until then\n",
+			jiffies_to_msecs(SYSC_IDLE_DELAY));
+	schedule_delayed_work(&ddata->idle_work, SYSC_IDLE_DELAY);
+}
+
+static void sysc_deferred_idle_done(void)
+{
+	int n = atomic_inc_return(&sysc_idle_done);
+
+	if (atomic_dec_and_test(&sysc_idle_pending)) {
+		atomic_sub(n, &sysc_idle_done);
+		pr_info("ti-sysc: deferred idle done, %d modules kept active from init can idle now\n", n);
+	}
+}
+
 static void ti_sysc_idle(struct work_struct *work)
 {
 	struct sysc *ddata;
@@ -2900,16 +2927,16 @@ static void ti_sysc_idle(struct work_struct *work)
 		sysc_clkdm_allow_idle(ddata);
 	}
 
-	/* Keep permanent PM runtime usage count for SYSC_QUIRK_NO_IDLE */
-	if (ddata->cfg.quirks & SYSC_QUIRK_NO_IDLE)
-		return;
-
 	/*
-	 * Decrement PM runtime usage count for SYSC_QUIRK_NO_IDLE_ON_INIT
-	 * and SYSC_QUIRK_NO_RESET_ON_INIT
+	 * Keep permanent PM runtime usage count for SYSC_QUIRK_NO_IDLE.
+	 * Decrement it for SYSC_QUIRK_NO_IDLE_ON_INIT and
+	 * SYSC_QUIRK_NO_RESET_ON_INIT.
 	 */
-	if (pm_runtime_active(ddata->dev))
+	if (!(ddata->cfg.quirks & SYSC_QUIRK_NO_IDLE) &&
+	    pm_runtime_active(ddata->dev))
 		pm_runtime_put_sync(ddata->dev);
+
+	sysc_deferred_idle_done();
 }
 
 /*
@@ -3256,7 +3283,7 @@ static int sysc_probe(struct platform_device *pdev)
 	if (ddata->cfg.quirks & (SYSC_QUIRK_NO_IDLE |
 				 SYSC_QUIRK_NO_IDLE_ON_INIT |
 				 SYSC_QUIRK_NO_RESET_ON_INIT)) {
-		schedule_delayed_work(&ddata->idle_work, 3000);
+		sysc_defer_idle(ddata);
 	} else {
 		pm_runtime_put(&pdev->dev);
 	}
