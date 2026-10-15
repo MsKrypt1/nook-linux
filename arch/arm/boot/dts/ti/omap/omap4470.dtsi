@@ -9,24 +9,59 @@
 / {
 	cpus {
 		cpu0: cpu@0 {
-			/*
-			 * Above 1 GHz the 4470 MPU must run from CLKOUTX2_M3 with
-			 * DCC enabled and dpll_mpu locked at half the rate. The
-			 * clock driver does not do that yet: 1.3 GHz never locks
-			 * and 1.1 GHz locks out of spec, so stop at OPP100.
-			 *
-			 * OPP50 (396800 kHz, 1037000 uV) is left out until AVS
-			 * class 1.5 is in place: a single OPP never relocks
-			 * dpll_mpu and never sends the TWD rate-change IPI.
-			 */
-			operating-points = <
-				/* kHz    uV */
-				800000 1200000	/* OPP100 */
-			>;
-			clock-latency = <300000>; /* From legacy driver */
+			operating-points-v2 = <&cpu_opp_table>;
 
 			/* cooling options */
 			#cooling-cells = <2>; /* min followed by max */
+		};
+
+		cpu@1 {
+			operating-points-v2 = <&cpu_opp_table>;
+		};
+	};
+
+	/*
+	 * MPU OPPs from SWPU325 Tables 2-1 and 2-2, rates from TRM Table 3-88
+	 * (SYS_CLK 38.4 MHz). OPP50 and OPP100 share one DPLL_MPU lock (Fdpll
+	 * 1.6 GHz) and differ only in M2; OPPTB and OPPNT lock at the MPU rate
+	 * and use CLKOUTX2_M3 with the DCC. Those two are boost OPPs: off
+	 * until /sys/devices/system/cpu/cpufreq/boost is set.
+	 *
+	 * OPPNTSB (1497.6 MHz, 1.387 V) is left out. SWPU325 requires ABB
+	 * there, and the only mode the TRM gives for it is Set2 (RBB), which
+	 * needs the MPU_RBB_NTSB trim (TRM §3.8.4.3.3). Without ABB, AVS on a
+	 * warm 1.5 GHz part settles above the nominal.
+	 */
+	cpu_opp_table: opp-table {
+		compatible = "operating-points-v2";
+		opp-shared;
+
+		opp-400000000 {
+			opp-hz = /bits/ 64 <400000000>;
+			opp-microvolt = <1037000>;
+			clock-latency-ns = <300000>;
+		};
+
+		/* Suspend from the bootloader's OPP: no DCC, ABB bypass */
+		opp-800000000 {
+			opp-hz = /bits/ 64 <800000000>;
+			opp-microvolt = <1200000>;
+			clock-latency-ns = <300000>;
+			opp-suspend;
+		};
+
+		opp-1100800000 {
+			opp-hz = /bits/ 64 <1100800000>;
+			opp-microvolt = <1312000>;
+			clock-latency-ns = <300000>;
+			turbo-mode;
+		};
+
+		opp-1297920000 {
+			opp-hz = /bits/ 64 <1297920000>;
+			opp-microvolt = <1375000>;
+			clock-latency-ns = <300000>;
+			turbo-mode;
 		};
 	};
 
@@ -56,13 +91,19 @@
 			reg-names = "base-address", "int-address",
 				    "efuse-address";
 
+			/*
+			 * ABB per TRM §3.8.4.3 and Table 3-363: RBB (Set2) at
+			 * TURBO/NITRO/NTSB when CONTROL_STD_FUSE_OPP_DPLL_1
+			 * says it is trimmed; otherwise FBB (Set1) at NITRO
+			 * and bypass at TURBO and NTSB.
+			 */
 			ti,abb_info = <
 				/*uV		ABB	efuse	rbb_m		fbb_m	vset_m*/
 				1037000		0	0		0			0		0
 				1200000		0	0		0			0		0
-				1312000		0	0		0x100000 	0 		0
+				1312000		0	0		0x100000	0		0
 				1375000		1	0		0x400000	0		0
-				1380000		1	0		0x800000	0		0
+				1387000		0	0		0x800000	0		0
 			>;
 		};
 
@@ -76,15 +117,28 @@
 
 			ti,abb_info = <
 				/*uV		ABB	efuse	rbb_m		fbb_m	vset_m*/
-				950000		0	0		0			0		0
+				962000		0	0		0			0		0
 				1137000		0	0		0			0		0
 				1287000		0	0		0x200000 	0		0
 				1375000		1	0		0x1000000	0		0
-				1376000		1	0		0x2000000	0		0
+				1380000		0	0		0x2000000	0		0
 			>;
 		};
 	};
 };
+
+/*
+ * dpll_mpu_ck is MPU_DPLL_CLK: CLKOUT_M2 below 1 GHz, CLKOUTX2_M3 through
+ * the DCC above. The extra registers are CM_DIV_M2_DPLL_MPU and
+ * CM_MPU_MPU_CLKCTRL (bridge dividers). The driver owns M2, so the
+ * dpll_mpu_m2_ck divider goes.
+ */
+&dpll_mpu_ck {
+	compatible = "ti,omap4470-mpu-dpll-clock";
+	reg = <0x0160>, <0x0164>, <0x016c>, <0x0168>, <0x0170>, <0x0320>;
+};
+
+/delete-node/ &dpll_mpu_m2_ck;
 
 &cpu_thermal {
 	thermal-sensors = <&bandgap>;
