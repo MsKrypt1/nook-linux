@@ -384,6 +384,7 @@
 		pinctrl-names = "default";
 		pinctrl-0 = <&charger_pins>;
 		psel-gpios = <&gpio3 21 GPIO_ACTIVE_HIGH>;
+		power-supplies = <&twl_usb>;
 		interrupt-parent = <&gpio5>;
 		interrupts = <14 2>;
 		omit-battery-class;
@@ -703,10 +704,14 @@
 	};
 
 	/* USB Interface */
-	usb {
+	twl_usb: usb {
 		compatible = "ti,twl6030-usb";
 		interrupts = <4 10>;
 		usb-supply = <&ldousb>;
+		/* BC1.2 detection, CONTROL_USB2PHYCORE */
+		syscon-chgdet = <&omap4_padconf_global 0x80>;
+		phys = <&usb2_phy>;
+		phy-names = "usb2-phy";
 	};
 
 	/* PWM for LED/Backlight */
