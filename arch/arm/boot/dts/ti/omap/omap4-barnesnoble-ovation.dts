@@ -12,7 +12,7 @@
 	compatible = "barnesnoble,ovation", "ti,omap4470", "ti,omap4";
 
 	chosen {
-		bootargs = "console=ttyS0,115200n8 earlyprintk ignore_loglevel root=/dev/ram0 rw init=/init omap_wdt.early_enable=1 omap_wdt.run_in_suspend=1 log_buf_len=1M initrd=0x82000000,6323720";
+		bootargs = "console=ttyS0,115200n8 earlyprintk ignore_loglevel root=/dev/ram0 rw init=/init omap_wdt.early_enable=1 log_buf_len=1M initrd=0x82000000,6323720";
 		stdout-path = &uart1;
 	};
 
@@ -559,16 +559,6 @@
  */
 &rng_target {
 	status = "disabled";
-};
-
-/*
- * Suspend debugging: ti-sysc stops WDT2 when it idles the module in noirq
- * suspend, so without this a hang late in suspend or in resume is never
- * reset. Together with omap_wdt.run_in_suspend=1 in bootargs. Drop both once
- * suspend works.
- */
-&{/ocp/interconnect@4a300000/segment@10000/target-module@4000} {
-	ti,no-idle;
 };
 
 &twl6032 {
