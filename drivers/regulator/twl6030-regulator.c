@@ -731,6 +731,23 @@ static int twlreg_probe(struct platform_device *pdev)
 	if (of_property_read_bool(np, "ti,retain-on-reset"))
 		info->flags |= TWL_6030_WARM_RESET;
 
+	/*
+	 * WR_S is otherwise only written by set_voltage_sel(), which the
+	 * regulator core skips when the bootloader already left the LDO at
+	 * the requested selector. Set it now, so a warm reset keeps the LDO.
+	 */
+	if ((info->flags & TWL_6030_WARM_RESET) &&
+	    info->desc.ops == &twl6030ldo_ops) {
+		int vsel = twlreg_read(info, TWL_MODULE_PM_RECEIVER,
+				       VREG_VOLTAGE);
+
+		if (vsel < 0)
+			return vsel;
+		if (!(vsel & TWL6030_VREG_VOLTAGE_WR_S))
+			twlreg_write(info, TWL_MODULE_PM_RECEIVER, VREG_VOLTAGE,
+				     vsel | TWL6030_VREG_VOLTAGE_WR_S);
+	}
+
 	config.dev = &pdev->dev;
 	config.init_data = initdata;
 	config.driver_data = info;
