@@ -623,13 +623,19 @@
 		};
 	};
 
-	/* LDO5 - Variable voltage for sensors */
+	/*
+	 * LDO5 - VMMC, the SD card slot (MMC1). Keep it on across a warm
+	 * reset: the TWL6032 otherwise resets it while the ROM code sets it
+	 * to 3 V for its MMC1 boot attempt, and u-boot then finds the MMC1
+	 * PBIAS cell in VMODE error.
+	 */
 	ldo5: regulator-ldo5 {
 		compatible = "ti,twl6032-ldo5";
 		// regulator-name = "ldo5";
 		regulator-min-microvolt = <1200000>;
 		regulator-max-microvolt = <3000000>;
 		regulator-boot-on;
+		ti,retain-on-reset;
 
 		regulator-state-mem {
 			regulator-off-in-suspend;
