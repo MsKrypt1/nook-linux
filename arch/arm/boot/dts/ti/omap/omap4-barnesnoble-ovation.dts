@@ -210,6 +210,11 @@
 		pinctrl-single,pins = <0x7c 0x03>;
 	};
 
+	/* bq24196 PSEL (gpio_85) */
+	charger_pins: charger-pins {
+		pinctrl-single,pins = <0x84 0x03>;
+	};
+
 	/* UART1 Pins */
 	pinmux_uart1_pins: pinmux-uart1-pins {
 		pinctrl-single,pins = <0xe6 0x101 0xe8 0x01>;
@@ -376,6 +381,9 @@
 		status = "okay";
 		compatible = "ti,bq24196";
 		reg = <0x6b>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&charger_pins>;
+		psel-gpios = <&gpio3 21 GPIO_ACTIVE_HIGH>;
 		interrupt-parent = <&gpio5>;
 		interrupts = <14 2>;
 		omit-battery-class;
