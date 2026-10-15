@@ -227,6 +227,7 @@ void omap2_clk_enable_init_clocks(const char **clk_names, u8 num_clocks);
 
 extern const struct clk_hw_omap_ops clkhwops_omap3_dpll;
 extern const struct clk_hw_omap_ops clkhwops_omap4_dpllmx;
+extern const struct clk_hw_omap_ops clkhwops_omap4470_mpu_dpll;
 extern const struct clk_hw_omap_ops clkhwops_wait;
 extern const struct clk_hw_omap_ops clkhwops_iclk;
 extern const struct clk_hw_omap_ops clkhwops_iclk_wait;
@@ -297,6 +298,12 @@ unsigned long omap4_dpll_regm4xen_recalc(struct clk_hw *hw,
 					 unsigned long parent_rate);
 int omap4_dpll_regm4xen_determine_rate(struct clk_hw *hw,
 				       struct clk_rate_request *req);
+unsigned long omap4470_mpu_dpll_recalc(struct clk_hw *hw,
+				       unsigned long parent_rate);
+int omap4470_mpu_dpll_determine_rate(struct clk_hw *hw,
+				     struct clk_rate_request *req);
+int omap4470_mpu_dpll_set_rate(struct clk_hw *hw, unsigned long rate,
+			       unsigned long parent_rate);
 int omap2_clk_for_each(int (*fn)(struct clk_hw_omap *hw));
 
 extern struct ti_clk_ll_ops *ti_clk_ll_ops;

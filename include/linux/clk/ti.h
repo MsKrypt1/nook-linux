@@ -52,6 +52,8 @@ struct clk_omap_reg {
  * @freqsel_mask: mask of the DPLL jitter correction bitfield in @control_reg
  * @dcc_mask: mask of the DPLL DCC correction bitfield @mult_div1_reg
  * @dcc_rate: rate atleast which DCC @dcc_mask must be set
+ * @m2_div_reg: OMAP4470 DPLL_MPU: CLKOUT_M2 divider register
+ * @mpu_clkctrl_reg: OMAP4470 DPLL_MPU: CM_MPU_MPU_CLKCTRL (bridge dividers)
  * @idlest_mask: mask of the DPLL idle status bitfield in @idlest_reg
  * @lpmode_mask: mask of the DPLL low-power mode bitfield in @control_reg
  * @m4xen_mask: mask of the DPLL M4X multiplier bitfield in @control_reg
@@ -73,6 +75,7 @@ struct clk_omap_reg {
  *
  * Possible values for @flags:
  * DPLL_J_TYPE: "J-type DPLL" (only some 36xx, 4xxx DPLLs)
+ * DPLL_OMAP4470_MPU: OMAP4470 DPLL_MPU, with @m2_div_reg and @mpu_clkctrl_reg
  *
  * @freqsel_mask is only used on the OMAP34xx family and AM35xx.
  *
@@ -111,6 +114,8 @@ struct dpll_data {
 	u32			sddiv_mask;
 	u32			dcc_mask;
 	unsigned long		dcc_rate;
+	struct clk_omap_reg	m2_div_reg;
+	struct clk_omap_reg	mpu_clkctrl_reg;
 	u32			lpmode_mask;
 	u32			m4xen_mask;
 	u8			auto_recal_bit;
@@ -214,6 +219,7 @@ struct clk_hw_omap {
 
 /* DPLL Type and DCO Selection Flags */
 #define DPLL_J_TYPE		0x1
+#define DPLL_OMAP4470_MPU	0x2
 
 /* Static memmap indices */
 enum {
