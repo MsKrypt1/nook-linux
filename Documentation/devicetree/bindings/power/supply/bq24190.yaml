@@ -41,6 +41,13 @@ properties:
       when power is connected and the battery is below minimum system voltage,
       the system will be regulated above this setting.
 
+  psel-gpios:
+    maxItems: 1
+    description: |
+      GPIO connected to the PSEL input (bq24192, bq24192i and bq24196). High
+      selects a USB host source (500 mA default input current limit), low an
+      adapter (3 A).
+
   omit-battery-class:
     type: boolean
     description: |
