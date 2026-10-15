@@ -9,6 +9,7 @@
 #include <linux/module.h>
 #include <linux/interrupt.h>
 #include <linux/delay.h>
+#include <linux/gpio/consumer.h>
 #include <linux/pm_runtime.h>
 #include <linux/power_supply.h>
 #include <linux/power/bq24190_charger.h>
@@ -257,6 +258,8 @@ struct bq24190_dev_info {
 	bool				suspended;
 	bool				otg_vbus_enabled;
 	bool				boostback;
+	bool				psel_adapter;
+	struct gpio_desc		*psel;
 	int				vbat;
 	int				charge_type;
 	u16				sys_min;
@@ -354,7 +357,10 @@ static int bq24190_write_mask(struct bq24190_dev_info *bdi, u8 reg,
 	u8 v;
 	int ret;
 
-	/* Callers: wdt_work, the IRQ thread, sysfs and the VBUS regulator */
+	/*
+	 * Callers: wdt_work, input_current_limit_work, the IRQ thread, sysfs
+	 * and the VBUS regulator
+	 */
 	mutex_lock(&bdi->rmw_lock);
 
 	ret = bq24190_read(bdi, reg, &v);
@@ -1472,6 +1478,28 @@ static int bq24190_charger_get_iinlimit(struct bq24190_dev_info *bdi,
 	return 0;
 }
 
+/* Rerun the input current limit detection (PSEL/OTG or D+/D-) */
+static int bq24190_detect_iinlim(struct bq24190_dev_info *bdi)
+{
+	return bq24190_write_mask(bdi, BQ24190_REG_MOC,
+			BQ24190_REG_MOC_DPDM_EN_MASK,
+			BQ24190_REG_MOC_DPDM_EN_SHIFT, 1);
+}
+
+/* PSEL high: USB host, 500 mA by default; low: adapter, 3 A */
+static int bq24190_set_psel(struct bq24190_dev_info *bdi, bool adapter)
+{
+	if (!bdi->psel || adapter == bdi->psel_adapter)
+		return 0;
+
+	gpiod_set_value_cansleep(bdi->psel, !adapter);
+	bdi->psel_adapter = adapter;
+	dev_dbg(bdi->dev, "PSEL: %s\n", adapter ? "adapter" : "USB host");
+
+	/* The detection reads PSEL only when it runs */
+	return bq24190_detect_iinlim(bdi);
+}
+
 static int bq24190_charger_set_iinlimit(struct bq24190_dev_info *bdi,
 		const union power_supply_propval *val)
 {
@@ -1622,10 +1650,28 @@ static void bq24190_input_current_limit_work(struct work_struct *work)
 		container_of(work, struct bq24190_dev_info,
 			     input_current_limit_work.work);
 	union power_supply_propval val;
+	bool adapter;
 	int ret;
 
 	if (bdi->suspended)
 		return;
+
+	/* The PSEL default also holds in default mode, so in sleep */
+	if (bdi->psel) {
+		adapter = !power_supply_get_property_from_supplier(bdi->charger,
+						POWER_SUPPLY_PROP_USB_TYPE, &val) &&
+			  val.intval == POWER_SUPPLY_USB_TYPE_DCP;
+
+		ret = pm_runtime_resume_and_get(bdi->dev);
+		if (ret < 0)
+			return;
+		ret = bq24190_set_psel(bdi, adapter);
+		if (ret < 0)
+			dev_warn(bdi->dev, "Can't rerun IINLIM detection: %d\n",
+				 ret);
+		pm_runtime_mark_last_busy(bdi->dev);
+		pm_runtime_put_autosuspend(bdi->dev);
+	}
 
 	ret = power_supply_get_property_from_supplier(bdi->charger,
 						      POWER_SUPPLY_PROP_CURRENT_MAX,
@@ -2329,6 +2375,12 @@ static int bq24190_probe(struct i2c_client *client)
 		return -EINVAL;
 	}
 
+	/* USB host until a supplier reports a DCP; boot code may differ */
+	bdi->psel = devm_gpiod_get_optional(dev, "psel", GPIOD_OUT_HIGH);
+	if (IS_ERR(bdi->psel))
+		return dev_err_probe(dev, PTR_ERR(bdi->psel),
+				     "Can't get PSEL GPIO\n");
+
 	bdi->edev = devm_extcon_dev_allocate(dev, bq24190_usb_extcon_cable);
 	if (IS_ERR(bdi->edev))
 		return PTR_ERR(bdi->edev);
@@ -2386,6 +2438,13 @@ static int bq24190_probe(struct i2c_client *client)
 	if (ret < 0) {
 		dev_err(dev, "Hardware init failed\n");
 		goto out_charger;
+	}
+
+	/* The last detection may have seen another PSEL level */
+	if (bdi->psel) {
+		ret = bq24190_detect_iinlim(bdi);
+		if (ret < 0)
+			goto out_charger;
 	}
 
 	ret = bq24190_configure_usb_otg(bdi, bdi->ss_reg);
