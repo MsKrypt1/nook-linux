@@ -37,10 +37,34 @@ struct omap2430_glue {
 	unsigned int		is_runtime_suspended:1;
 	unsigned int		needs_resume:1;
 	unsigned int		phy_suspended:1;
+	unsigned int		phy_on:1;
 };
 #define glue_to_musb(g)		platform_get_drvdata(g->musb)
 
 static struct omap2430_glue	*_glue;
+
+/*
+ * The PHY's init and power counts are shared with other users.  Hold at
+ * most one reference: system suspend powers the PHY off again when it is
+ * already runtime suspended, which took the counts below zero, and further
+ * phy_power_on() calls then did nothing.
+ */
+static void omap2430_phy_power(struct musb *musb, bool on)
+{
+	struct omap2430_glue *glue = dev_get_drvdata(musb->controller->parent);
+
+	if (glue->phy_on == on)
+		return;
+
+	if (on) {
+		phy_init(musb->phy);
+		phy_power_on(musb->phy);
+	} else {
+		phy_power_off(musb->phy);
+		phy_exit(musb->phy);
+	}
+	glue->phy_on = on;
+}
 
 static inline void omap2430_low_level_exit(struct musb *musb)
 {
@@ -222,8 +246,7 @@ static int omap2430_musb_init(struct musb *musb)
 		return PTR_ERR(musb->phy);
 	}
 	musb->isr = omap2430_musb_interrupt;
-	phy_init(musb->phy);
-	phy_power_on(musb->phy);
+	omap2430_phy_power(musb, true);
 
 	l = musb_readl(musb->mregs, OTG_INTERFSEL);
 
@@ -274,8 +297,7 @@ static int omap2430_musb_exit(struct musb *musb)
 	struct omap2430_glue *glue = dev_get_drvdata(dev->parent);
 
 	omap2430_low_level_exit(musb);
-	phy_power_off(musb->phy);
-	phy_exit(musb->phy);
+	omap2430_phy_power(musb, false);
 	musb->phy = NULL;
 	cancel_work_sync(&glue->omap_musb_mailbox_work);
 
@@ -494,8 +516,7 @@ static int omap2430_runtime_suspend(struct device *dev)
 	omap2430_low_level_exit(musb);
 
 	if (!glue->phy_suspended) {
-		phy_power_off(musb->phy);
-		phy_exit(musb->phy);
+		omap2430_phy_power(musb, false);
 	}
 
 	glue->is_runtime_suspended = 1;
@@ -512,8 +533,7 @@ static int omap2430_runtime_resume(struct device *dev)
 		return 0;
 
 	if (!glue->phy_suspended) {
-		phy_init(musb->phy);
-		phy_power_on(musb->phy);
+		omap2430_phy_power(musb, true);
 	}
 
 	omap2430_low_level_init(musb);
@@ -534,8 +554,7 @@ static int omap2430_suspend(struct device *dev)
 	struct omap2430_glue *glue = dev_get_drvdata(dev);
 	struct musb *musb = glue_to_musb(glue);
 
-	phy_power_off(musb->phy);
-	phy_exit(musb->phy);
+	omap2430_phy_power(musb, false);
 	glue->phy_suspended = 1;
 
 	return 0;
@@ -571,8 +590,7 @@ static int omap2430_resume(struct device *dev)
 	struct omap2430_glue *glue = dev_get_drvdata(dev);
 	struct musb *musb = glue_to_musb(glue);
 
-	phy_init(musb->phy);
-	phy_power_on(musb->phy);
+	omap2430_phy_power(musb, true);
 	glue->phy_suspended = 0;
 
 	return 0;
