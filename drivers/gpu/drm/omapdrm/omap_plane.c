@@ -246,6 +246,19 @@ static int omap_plane_atomic_check(struct drm_plane *plane,
 	if (ret)
 		return ret;
 
+	/*
+	 * A plane state restored on resume names the overlays the plane had
+	 * before suspend, but the commit that disabled everything at suspend
+	 * released them in the global state. Only keep the overlays the
+	 * global state still assigns to this plane.
+	 */
+	if (omap_state->overlay &&
+	    !omap_overlay_assigned_to(state, omap_state->overlay, plane))
+		omap_state->overlay = NULL;
+	if (omap_state->r_overlay &&
+	    !omap_overlay_assigned_to(state, omap_state->r_overlay, plane))
+		omap_state->r_overlay = NULL;
+
 	DBG("%s: visible %d -> %d", plane->name,
 	    old_plane_state->visible, new_plane_state->visible);
 
