@@ -522,10 +522,11 @@
 		interrupt-parent = <&gpio2>;
 		interrupts = <5 2>;
 		reset-gpios = <&gpio2 7 1>;
-		touchscreen-size-x = <1080>;
-		touchscreen-size-y = <1920>;
+		/* The controller reports in the panel's landscape frame, rotated 180 degrees */
+		touchscreen-size-x = <1920>;
+		touchscreen-size-y = <1280>;
+		touchscreen-inverted-x;
 		touchscreen-inverted-y;
-		touchscreen-swapped-x-y;
 	};
 };
 
