@@ -347,9 +347,9 @@
 		pinctrl-single,pins = <0xea 0x118 0xec 0x118>;
 	};
 
-	/* DSI1 Pins */
-	dsi1_pins: dsi1-pins {
-		pinctrl-single,pins = <0x108 0x03 0x18e 0x03>;
+	/* LCD CABC_EN (dpm_emu16.gpio_27) and CM_EN (sdmmc5_clk.gpio_145) */
+	panel_pins: panel-pins {
+		pinctrl-single,pins = <0x18e 0x03 0x108 0x03>;
 	};
 
 	/* Touchscreen Panel (FT5x06) */
@@ -729,10 +729,12 @@
 		};
 	};
 
-	/* LDO6 - Core voltage */
+	/* LDO6 - VCXIO, 1.8V: DSI PHY, PLLs, I/O */
 	ldo6: regulator-ldo6 {
 		compatible = "ti,twl6032-ldo6";
 		// regulator-name = "ldo6";
+		regulator-min-microvolt = <1800000>;
+		regulator-max-microvolt = <1800000>;
 		regulator-always-on;
 		regulator-initial-state = <0>;
 
@@ -832,28 +834,34 @@
 	};
 };
 
-/* DSI1 LCD Panel Configuration */
+&dss {
+	status = "okay";
+};
+
+/*
+ * Samsung LTL090CL01 on DSI1: clock lane on DSI1 pins 0/1, data lanes 1-4
+ * on pins 2-9, all with positive polarity. The DSI PHY runs from VCXIO
+ * (LDO6).
+ */
 &dsi1 {
 	status = "okay";
-	vdd-supply = <&vdd_lcdtp>;
-	pinctrl-names = "default";
-	pinctrl-0 = <&dsi1_pins>;
+	vdd-supply = <&ldo6>;
 
 	port {
 		dsi1_out: endpoint {
 			remote-endpoint = <&panel0_in>;
-			lanes = <0 1 2 3 4>;
+			lanes = <0 1 2 3 4 5 6 7 8 9>;
 		};
 	};
 
 	panel@0 {
 		compatible = "samsung,ltl090cl01";
 		reg = <0>;
-		label = "panel0";
-		status = "okay";
+		pinctrl-names = "default";
+		pinctrl-0 = <&panel_pins>;
 		power-supply = <&vdd_lcdtp>;
-		reset-gpios = <&gpio5 17 0>;
-		enable-gpios = <&gpio1 27 0>;
+		cabc-enable-gpios = <&gpio1 27 GPIO_ACTIVE_HIGH>;
+		cm-enable-gpios = <&gpio5 17 GPIO_ACTIVE_HIGH>;
 		backlight = <&lcd_backlight>;
 
 		port {
