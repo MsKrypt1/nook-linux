@@ -4246,6 +4246,8 @@ static ssize_t _omap_dsi_host_transfer(struct dsi_data *dsi, int vc,
 	case MIPI_DSI_DCS_LONG_WRITE:
 	case MIPI_DSI_SET_MAXIMUM_RETURN_PACKET_SIZE:
 	case MIPI_DSI_NULL_PACKET:
+	case MIPI_DSI_TURN_ON_PERIPHERAL:
+	case MIPI_DSI_SHUTDOWN_PERIPHERAL:
 		r = dsi_vc_write_common(dssdev, vc, msg);
 		break;
 	case MIPI_DSI_GENERIC_READ_REQUEST_0_PARAM:
