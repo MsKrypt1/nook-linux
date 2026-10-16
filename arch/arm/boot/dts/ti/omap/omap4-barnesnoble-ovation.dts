@@ -294,7 +294,7 @@
 		pinctrl-single,pins = <0xd0 0x11d 0xd2 0x05 0x11c 0x100 0x11e 0x00>;
 	};
 
-	/* Bluetooth Pins */
+	/* Bluetooth nshutdown (cam_globalreset as gpio_83) */
 	bt_pins: bt-pins {
 		pinctrl-single,pins = <0x80 0x03>;
 	};
@@ -536,18 +536,24 @@
 	status = "okay";
 };
 
-/* UART3 - Bluetooth */
-/*&uart3 {
-	status = "okay";
-	pinctrl-names = "default";
-	pinctrl-0 = <&uart3_pins>;
-};*/
-
-/* UART4 */
+/*
+ * UART4 - Bluetooth: the WiLink's HCI UART with RTS/CTS (vendor
+ * board-bn-wifi.c, ttyO3), nshutdown on gpio_83. The 32 kHz slow clock is
+ * the TWL6032 CLK32KG, shared with the WLAN power sequence.
+ */
 &uart4 {
 	status = "okay";
 	pinctrl-names = "default";
 	pinctrl-0 = <&uart4_pins>;
+
+	bluetooth {
+		compatible = "ti,wl1271-st";
+		pinctrl-names = "default";
+		pinctrl-0 = <&bt_pins>;
+		enable-gpios = <&gpio3 19 GPIO_ACTIVE_HIGH>;	/* gpio_83 */
+		clocks = <&twl6032 0>;
+		clock-names = "ext_clock";
+	};
 };
 
 /* MMC1 - SD Card Slot */
