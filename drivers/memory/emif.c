@@ -947,6 +947,10 @@ static struct emif_data *of_get_memory_device_details(
 		dev_err(dev, "%s: invalid device data!!\n", __func__);
 		goto error;
 	}
+
+	/* Per EMIF instance, so also needed for a duplicate */
+	of_get_custom_configs(np_emif, emif);
+
 	/*
 	 * For EMIF instances other than EMIF1 see if the devices connected
 	 * are exactly same as on EMIF1(which is typically the case). If so,
@@ -961,7 +965,6 @@ static struct emif_data *of_get_memory_device_details(
 			__func__);
 	}
 
-	of_get_custom_configs(np_emif, emif);
 	emif->plat_data->timings = of_get_ddr_timings(np_ddr, emif->dev,
 					emif->plat_data->device_info->type,
 					&emif->plat_data->timings_arr_size);
