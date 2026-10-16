@@ -719,6 +719,16 @@ static void emif_onetime_settings(struct emif_data *emif)
 	pwr_mgmt_ctrl = get_pwr_mgmt_ctrl(1000000000, emif,
 			emif->plat_data->ip_rev);
 	emif->lpmode = (pwr_mgmt_ctrl & LP_MODE_MASK) >> LP_MODE_SHIFT;
+	/*
+	 * The EMIF loads the timers from the shadow register whenever it
+	 * acknowledges an idle request (SIdleAck), not only on a frequency
+	 * update. With only the active register written, SR_TIM drops back to
+	 * the bootloader's shadow value (0 on OMAP4470) while self-refresh
+	 * stays enabled, and erratum i735 says that corrupts the LPDDR2
+	 * contents. Program the shadow first.
+	 */
+	writel(pwr_mgmt_ctrl & ~(LP_MODE_MASK | DPD_EN_MASK),
+	       base + EMIF_POWER_MANAGEMENT_CTRL_SHDW);
 	writel(pwr_mgmt_ctrl, base + EMIF_POWER_MANAGEMENT_CONTROL);
 
 	/* Init ZQ calibration settings */
