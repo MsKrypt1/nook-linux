@@ -1997,6 +1997,7 @@ void musb_g_disconnect(struct musb *musb)
 	(void) musb_gadget_vbus_draw(&musb->g, 0);
 
 	musb->g.speed = USB_SPEED_UNKNOWN;
+	usb_gadget_set_state(&musb->g, USB_STATE_NOTATTACHED);
 	if (musb->gadget_driver && musb->gadget_driver->disconnect) {
 		spin_unlock(&musb->lock);
 		musb->gadget_driver->disconnect(&musb->g);
