@@ -949,6 +949,16 @@ config DRM_PANEL_SAMSUNG_LD9040
 	depends on BACKLIGHT_CLASS_DEVICE
 	select VIDEOMODE_HELPERS
 
+config DRM_PANEL_SAMSUNG_LTL090CL01
+	tristate "Samsung LTL090CL01 DSI video mode panel"
+	depends on OF
+	depends on DRM_MIPI_DSI
+	depends on BACKLIGHT_CLASS_DEVICE
+	help
+	  Say Y here if you want to enable support for the Samsung
+	  LTL090CL01 9" 1920x1280 MIPI DSI panel, used in the Barnes &
+	  Noble Nook HD+.
+
 config DRM_PANEL_SAMSUNG_LTL106HL02
 	tristate "Samsung LTL106HL02 panel"
 	depends on OF
