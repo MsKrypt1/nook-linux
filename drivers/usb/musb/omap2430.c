@@ -126,6 +126,13 @@ static void omap_musb_set_mailbox(struct omap2430_glue *glue)
 	switch (glue->status) {
 	case MUSB_ID_GROUND:
 		dev_dbg(musb->controller, "ID GND\n");
+		/*
+		 * A peripheral-only port has no host side to switch to,
+		 * and must not drive VBUS: on some boards the PHY
+		 * companion's VBUS supply is not the one that is wired up.
+		 */
+		if (musb->port_mode == MUSB_PERIPHERAL)
+			break;
 		switch (musb->xceiv->otg->state) {
 		case OTG_STATE_A_IDLE:
 			error = musb_set_host(musb);
