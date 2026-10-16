@@ -2025,6 +2025,16 @@ void musb_g_disconnect(struct musb *musb)
 	musb->is_active = 0;
 }
 
+/*
+ * For glue layers that sense VBUS: keep the D+ pull-up off outside a
+ * B-session.  BC1.2 charger detection, which runs before the glue
+ * reports VBUS, needs D+ free.
+ */
+void musb_g_vbus(struct musb *musb, bool vbus)
+{
+	usb_udc_vbus_handler(&musb->g, vbus);
+}
+
 void musb_g_reset(struct musb *musb)
 __releases(musb->lock)
 __acquires(musb->lock)
