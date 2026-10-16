@@ -21,6 +21,7 @@ extern void musb_g_suspend(struct musb *);
 extern void musb_g_resume(struct musb *);
 extern void musb_g_wakeup(struct musb *);
 extern void musb_g_disconnect(struct musb *);
+extern void musb_g_vbus(struct musb *, bool);
 extern void musb_gadget_cleanup(struct musb *);
 extern int musb_gadget_setup(struct musb *);
 
@@ -37,6 +38,7 @@ static inline void musb_g_suspend(struct musb *musb)		{}
 static inline void musb_g_resume(struct musb *musb)		{}
 static inline void musb_g_wakeup(struct musb *musb)		{}
 static inline void musb_g_disconnect(struct musb *musb)		{}
+static inline void musb_g_vbus(struct musb *musb, bool vbus)	{}
 static inline void musb_gadget_cleanup(struct musb *musb)	{}
 static inline int musb_gadget_setup(struct musb *musb)
 {

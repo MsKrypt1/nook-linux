@@ -167,6 +167,7 @@ static void omap_musb_set_mailbox(struct omap2430_glue *glue)
 		musb->xceiv->otg->state = OTG_STATE_B_IDLE;
 		musb->xceiv->last_event = USB_EVENT_VBUS;
 		omap_control_usb_set_mode(glue->control_otghs, USB_MODE_DEVICE);
+		musb_g_vbus(musb, true);
 		break;
 
 	case MUSB_ID_FLOAT:
@@ -174,6 +175,7 @@ static void omap_musb_set_mailbox(struct omap2430_glue *glue)
 		dev_dbg(musb->controller, "VBUS Disconnect\n");
 
 		musb->xceiv->last_event = USB_EVENT_NONE;
+		musb_g_vbus(musb, false);
 		musb_set_peripheral(musb);
 		otg_set_vbus(musb->xceiv->otg, 0);
 		omap_control_usb_set_mode(glue->control_otghs,
