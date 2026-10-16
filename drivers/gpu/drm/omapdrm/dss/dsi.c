@@ -66,6 +66,16 @@ static bool dsi_perf;
 module_param(dsi_perf, bool, 0644);
 #endif
 
+/*
+ * Video event mode: TXBYTECLKHS cycles between the end of the DSI HSS + HBP
+ * and DISPC's first pixel of the line, both counted from the end of HSYNC.
+ * Measured on an OMAP4470 with 4 data lanes, RGB666 packed and an 83.52 MHz
+ * byte clock (0.5625 byte clocks per pixel): the image is right with DISPC
+ * HBP 39 and DSI HSS + HBP 1, and with DISPC HBP 46 and DSI HSS + HBP 5, both
+ * 20.9; DISPC HBP 39 with DSI HSS + HBP 22 shifts it by 84 bytes.
+ */
+#define DSI_VM_VP_DELAY	21
+
 /* Note: for some reason video mode seems to work only if VC_VIDEO is 0 */
 #define VC_VIDEO	0
 #define VC_CMD		1
@@ -3856,11 +3866,13 @@ static bool dsi_vm_calc_blanking(struct dsi_clk_calc_ctx *ctx)
 		hsa = max(hsa - hse, 1);
 	}
 
+	/* a mode without a back porch gets none on the link either */
 	hbp = div64_u64((u64)req_vm->hback_porch * byteclk, req_pck_nom);
-	hbp = max(hbp, 1);
+	if (req_vm->hback_porch)
+		hbp = max(hbp, 1);
 
 	hfp = dsi_hbl - (hss + hsa + hse + hbp);
-	if (hfp < 1) {
+	if (hfp < 1 && hbp > 0) {
 		int t;
 		/* we need to take cycles from hbp */
 
@@ -3912,6 +3924,37 @@ static bool dsi_vm_calc_blanking(struct dsi_clk_calc_ctx *ctx)
 		hsa = max(hsa, 1);
 	} else {
 		hsa = 1;
+	}
+
+	if (cfg->trans_mode == OMAP_DSS_DSI_EVENT_MODE) {
+		/*
+		 * In event mode the DSI line and frame start at the end of
+		 * the video port's HSYNC and VSYNC, and the DSI takes the
+		 * pixels from the video port as they come: DISPC's active
+		 * area must line up with the DSI payload, not with the
+		 * panel's porches. DISPC VBP covers the DSI VSA + VBP, and
+		 * DISPC HBP the DSI HSS + HBP plus DSI_VM_VP_DELAY. With any
+		 * other alignment the image is shifted and, in RGB666 packed,
+		 * its colors are rotated.
+		 */
+		hbp = DIV_ROUND_CLOSEST_ULL((u64)(dsi_vm->hss + dsi_vm->hbp +
+					     DSI_VM_VP_DELAY) * dispc_pck,
+					    byteclk);
+		hfp = dispc_hbl - hsa - hbp;
+		if (hfp < 1)
+			return false;
+
+		dispc_vm->hfront_porch = hfp;
+		dispc_vm->hsync_len = hsa;
+		dispc_vm->hback_porch = hbp;
+
+		if (req_vm->vfront_porch < dsi_vm->vsa)
+			return false;
+
+		dispc_vm->vback_porch = dsi_vm->vsa + dsi_vm->vbp;
+		dispc_vm->vfront_porch = req_vm->vfront_porch - dsi_vm->vsa;
+
+		return true;
 	}
 
 	hbp = div64_u64((u64)req_vm->hback_porch * dispc_pck, req_pck_nom);
