@@ -106,6 +106,19 @@ int omap_overlay_assign(struct drm_atomic_commit *s, struct drm_plane *plane,
 }
 
 /*
+ * Check whether the global state of the atomic transaction assigns @overlay to
+ * @plane.
+ */
+bool omap_overlay_assigned_to(struct drm_atomic_commit *s,
+			      struct omap_hw_overlay *overlay,
+			      struct drm_plane *plane)
+{
+	struct omap_global_state *state = omap_get_global_state(s);
+
+	return state->hwoverlay_to_plane[overlay->idx] == plane;
+}
+
+/*
  * Release an overlay from a plane if the plane gets not visible or the plane
  * need a new overlay if overlay caps changes.
  * This should be called from the plane atomic_check() in order to prepare the
