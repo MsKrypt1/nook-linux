@@ -382,11 +382,15 @@ static irqreturn_t twl6030_usb_irq(int irq, void *_twl)
 
 	vbus_state = twl6030_readb(twl, TWL_MODULE_MAIN_CHARGE,
 						CONTROLLER_STAT1);
+	/* A plug or unplug often raises more than one interrupt */
 	if (!(hw_state & STS_USB_ID)) {
 		if (vbus_state & VBUS_DET) {
+			if (twl->linkstat == MUSB_VBUS_VALID)
+				goto out;
+
 			twl6030_usb_ldo_get(twl);
 
-			if (twl->psy && twl->linkstat != MUSB_VBUS_VALID)
+			if (twl->psy)
 				twl6030_usb_charger_detect(twl);
 
 			status = MUSB_VBUS_VALID;
@@ -395,7 +399,8 @@ static irqreturn_t twl6030_usb_irq(int irq, void *_twl)
 			if (ret)
 				twl->linkstat = MUSB_UNKNOWN;
 		} else {
-			if (twl->linkstat != MUSB_UNKNOWN) {
+			if (twl->linkstat != MUSB_UNKNOWN &&
+			    twl->linkstat != MUSB_VBUS_OFF) {
 				status = MUSB_VBUS_OFF;
 				twl->linkstat = status;
 				ret = musb_mailbox(status);
@@ -411,7 +416,7 @@ static irqreturn_t twl6030_usb_irq(int irq, void *_twl)
 	sysfs_notify(&twl->dev->kobj, NULL, "vbus");
 	if (twl->psy && status != MUSB_UNKNOWN)
 		power_supply_changed(twl->psy);
-
+out:
 	return IRQ_HANDLED;
 }
 
