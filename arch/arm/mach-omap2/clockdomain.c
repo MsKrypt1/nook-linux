@@ -490,6 +490,14 @@ int clkdm_complete_init(void)
 
 		_resolve_clkdm_deps(clkdm, clkdm->sleepdep_srcs);
 		clkdm_clear_all_sleepdeps(clkdm);
+
+		if (clkdm->noidle_clkdm_name) {
+			clkdm->noidle_clkdm =
+				_clkdm_lookup(clkdm->noidle_clkdm_name);
+			WARN(!clkdm->noidle_clkdm,
+			     "clockdomain: %s: unknown noidle clkdm %s\n",
+			     clkdm->name, clkdm->noidle_clkdm_name);
+		}
 	}
 
 	/* Only AM43XX can lose clkdm context during rtc-ddr suspend */
@@ -1126,6 +1134,14 @@ int clkdm_clk_enable(struct clockdomain *clkdm, struct clk *unused)
 	if (!clkdm || !arch_clkdm || !arch_clkdm->clkdm_clk_enable)
 		return -EINVAL;
 
+	/*
+	 * Keep @noidle_clkdm out of idle before this clockdomain wakes up.
+	 * Done outside this powerdomain's lock: the callers are serialized
+	 * by the clock framework's enable lock.
+	 */
+	if (clkdm->noidle_clkdm && !clkdm->usecount)
+		clkdm_deny_idle(clkdm->noidle_clkdm);
+
 	pwrdm_lock(clkdm->pwrdm.ptr);
 
 	/*
@@ -1188,6 +1204,13 @@ int clkdm_clk_disable(struct clockdomain *clkdm, struct clk *clk)
 	pwrdm_state_switch_nolock(clkdm->pwrdm.ptr);
 
 	pr_debug("clockdomain: %s: disabled\n", clkdm->name);
+
+	pwrdm_unlock(clkdm->pwrdm.ptr);
+
+	if (clkdm->noidle_clkdm)
+		clkdm_allow_idle(clkdm->noidle_clkdm);
+
+	return 0;
 
 ccd_exit:
 	pwrdm_unlock(clkdm->pwrdm.ptr);
