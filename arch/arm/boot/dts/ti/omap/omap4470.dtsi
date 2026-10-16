@@ -181,6 +181,18 @@
 		 <0x00030000 0x00030000 0x00010000>;
 };
 
+/*
+ * 32k sync counter (clocksource and sched_clock): keep it in no-idle while
+ * running. In force-idle its L4_WKUP interface clock gates between reads,
+ * and a 32KSYNCNT_CR read right after the clock restarts can return a wrong
+ * value (erratum i103); reads then lag real time by up to ~800 ms. The MPU
+ * has no static dependency on CD_WKUP to keep that clock running.
+ * timer-ti-32k switches it to force-idle for suspend.
+ */
+&{/ocp/interconnect@4a300000/segment@0/target-module@4000} {
+	ti,no-idle;
+};
+
 &pmu {
 	compatible = "arm,cortex-a9-pmu";
 	interrupts = <GIC_SPI 54 IRQ_TYPE_LEVEL_HIGH>,
