@@ -630,6 +630,17 @@
 	status = "disabled";
 };
 
+/*
+ * USB OTG on the 30-pin connector: the internal UTMI PHY, with VBUS and ID
+ * sensed by the TWL6032 (twl6030-usb). Peripheral only for now. Host mode
+ * needs VBUS from the bq24196 boost; twl6030-usb would instead turn on the
+ * TWL6032's own charger boost, which this board does not use.
+ */
+&usb_otg_hs {
+	interface-type = <1>;
+	mode = <2>;
+};
+
 &twl6032 {
 	compatible = "ti,twl6032";
 	interrupts = <0 7 4>;
