@@ -12,6 +12,14 @@
  *   T5  >= 200 ms   valid data to backlight on
  *   T6  >= 200 ms   backlight off to valid data off
  *   T3  0..50 ms    valid data off to VDD off
+ *   T4  >= 500 ms   VDD off time (enforced by the supply's off-on delay)
+ *
+ * VDD may be shared (on the Nook HD+ with the touchscreen), so the panel
+ * loses power only when the supply really goes off. After that it stays
+ * black until it gets a Turn On Peripheral packet, which the boot loader
+ * and the vendor driver send before starting video. Sent to a panel that
+ * kept power, it is acknowledged with the errors the panel latched when
+ * the previous video stream stopped, so it is sent only after a power cut.
  */
 
 #include <linux/delay.h>
@@ -28,6 +36,9 @@ struct ltl090cl01 {
 	struct drm_panel panel;
 	struct mipi_dsi_device *dsi;
 	struct regulator *supply;
+	struct notifier_block supply_nb;
+	/* VDD went off since the last Turn On Peripheral */
+	bool powered_off;
 	struct gpio_desc *cabc_gpio;
 	struct gpio_desc *cm_gpio;
 };
@@ -54,6 +65,14 @@ static int ltl090cl01_prepare(struct drm_panel *panel)
 	/* T2: valid data no earlier than 90 ms after VDD */
 	msleep(100);
 
+	if (READ_ONCE(ctx->powered_off)) {
+		WRITE_ONCE(ctx->powered_off, false);
+		ret = mipi_dsi_turn_on_peripheral(ctx->dsi);
+		if (ret)
+			dev_err(panel->dev, "failed to turn on peripheral: %d\n",
+				ret);
+	}
+
 	return 0;
 }
 
@@ -71,6 +90,17 @@ static int ltl090cl01_disable(struct drm_panel *panel)
 	msleep(200);
 
 	return 0;
+}
+
+static int ltl090cl01_supply_event(struct notifier_block *nb,
+				   unsigned long event, void *data)
+{
+	struct ltl090cl01 *ctx = container_of(nb, struct ltl090cl01, supply_nb);
+
+	if (event & REGULATOR_EVENT_DISABLE)
+		WRITE_ONCE(ctx->powered_off, true);
+
+	return NOTIFY_OK;
 }
 
 static int ltl090cl01_unprepare(struct drm_panel *panel)
@@ -153,6 +183,14 @@ static int ltl090cl01_probe(struct mipi_dsi_device *dsi)
 	if (IS_ERR(ctx->supply))
 		return dev_err_probe(dev, PTR_ERR(ctx->supply),
 				     "failed to get power supply\n");
+
+	/* A panel left on by the boot loader has had its Turn On Peripheral */
+	ctx->powered_off = !regulator_is_enabled(ctx->supply);
+	ctx->supply_nb.notifier_call = ltl090cl01_supply_event;
+	ret = devm_regulator_register_notifier(ctx->supply, &ctx->supply_nb);
+	if (ret)
+		return dev_err_probe(dev, ret,
+				     "failed to register supply notifier\n");
 
 	ctx->cabc_gpio = devm_gpiod_get_optional(dev, "cabc-enable",
 						 GPIOD_OUT_LOW);
