@@ -126,6 +126,74 @@
 		regulator-always-on;
 		vbb-supply = <&abb_mpu>;
 	};
+
+	/*
+	 * One Hynix 4 Gb LPDDR2-S4 x32 on CS0 of each EMIF, read from the mode
+	 * registers: MR5 0x06 (Hynix), MR6 0x01, MR7 0x00, MR8 0x18. u-boot
+	 * runs it at 466.67 MHz; the timings are the vendor kernel's for that
+	 * rate (lpddr2_hynix_data.c). The EMIF driver keeps u-boot's register
+	 * values and uses this for the temperature de-rating.
+	 */
+	lpddr2_hynix: lpddr2 {
+		compatible = "lpddr2-06,0100", "jedec,lpddr2-s4";
+		revision-id = <0x01 0x00>;
+		density = <4096>;
+		io-width = <32>;
+
+		tRPab-min-tck = <3>;
+		tRCD-min-tck = <3>;
+		tWR-min-tck = <3>;
+		tRASmin-min-tck = <3>;
+		tRRD-min-tck = <2>;
+		tWTR-min-tck = <2>;
+		tXP-min-tck = <2>;
+		tRTP-min-tck = <2>;
+		tCKE-min-tck = <3>;
+		tCKESR-min-tck = <3>;
+		tFAW-min-tck = <8>;
+
+		lpddr2-timings@0 {
+			compatible = "jedec,lpddr2-timings";
+			min-freq = <10000000>;
+			max-freq = <466666666>;
+			tRPab = <21000>;
+			tRCD = <18000>;
+			tWR = <15000>;
+			tRAS-min = <42000>;
+			tRRD = <10000>;
+			tWTR = <7500>;
+			tXP = <7500>;
+			tRTP = <7500>;
+			tCKESR = <15000>;
+			tDQSCK-max = <5500>;
+			tFAW = <50000>;
+			tZQCS = <90000>;
+			tZQCL = <360000>;
+			tZQinit = <1000000>;
+			tRAS-max-ns = <70000>;
+			tDQSCK-max-derated = <6000>;
+		};
+	};
+};
+
+/*
+ * MR4 temperature polling (every 360 ms) and de-rating above 85 °C, as the
+ * vendor kernel did; it shut down only above the part's limit (MR4 7), hence
+ * extended-temp-part. Self-refresh on idle stays off (LP mode 0, as u-boot
+ * leaves it).
+ */
+&emif1 {
+	device-handle = <&lpddr2_hynix>;
+	low-power-mode = <0>;
+	temp-alert-poll-interval = <360>;
+	extended-temp-part;
+};
+
+&emif2 {
+	device-handle = <&lpddr2_hynix>;
+	low-power-mode = <0>;
+	temp-alert-poll-interval = <360>;
+	extended-temp-part;
 };
 
 &cpu0 {
