@@ -1,0 +1,74 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/display/panel/samsung,ltl090cl01.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Samsung LTL090CL01 9" 1920x1280 MIPI DSI panel
+
+maintainers:
+  - Krypt1 <mskrypt1@gmail.com>
+
+description:
+  A 9" 1920x1280 LCD with a four-lane MIPI DSI video mode interface (RGB666,
+  DE-only), used in the Barnes & Noble Nook HD+. Besides VDD it has two
+  control inputs, CABC_EN (content adaptive brightness control) and CM_EN
+  (color management). The LED backlight needs an external driver.
+
+allOf:
+  - $ref: panel-common.yaml#
+
+properties:
+  compatible:
+    const: samsung,ltl090cl01
+
+  reg:
+    maxItems: 1
+
+  power-supply:
+    description: VDD, 3.3 V
+
+  cabc-enable-gpios:
+    maxItems: 1
+    description: GPIO driving the CABC_EN input
+
+  cm-enable-gpios:
+    maxItems: 1
+    description: GPIO driving the CM_EN input
+
+  backlight: true
+  port: true
+
+required:
+  - compatible
+  - reg
+  - power-supply
+  - port
+
+additionalProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/gpio/gpio.h>
+
+    dsi {
+        #address-cells = <1>;
+        #size-cells = <0>;
+
+        panel@0 {
+            compatible = "samsung,ltl090cl01";
+            reg = <0>;
+            power-supply = <&vdd_lcd>;
+            cabc-enable-gpios = <&gpio1 27 GPIO_ACTIVE_HIGH>;
+            cm-enable-gpios = <&gpio5 17 GPIO_ACTIVE_HIGH>;
+            backlight = <&lcd_backlight>;
+
+            port {
+                panel_in: endpoint {
+                    remote-endpoint = <&dsi_out>;
+                };
+            };
+        };
+    };
+
+...
