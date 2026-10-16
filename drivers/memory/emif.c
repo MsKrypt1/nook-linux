@@ -517,6 +517,76 @@ out:
 	writel(tim1, base + EMIF_SDRAM_TIMING_1_SHDW);
 	writel(tim3, base + EMIF_SDRAM_TIMING_3_SHDW);
 	writel(ref_ctrl, base + EMIF_SDRAM_REFRESH_CTRL_SHDW);
+
+	/*
+	 * The shadow fields are loaded into the active registers when the
+	 * EMIF acknowledges an idle request (SIdleAck), as in a frequency
+	 * update, which nothing in the kernel requests, or a suspend. Update
+	 * the active registers too, as the TRM's temperature alert servicing
+	 * does (OMAP4470 TRM SWPU270T, Table 16-131): the refresh interval
+	 * counter reloads when the refresh rate changes, and TIM_1 is written
+	 * in a single access.
+	 */
+	writel((readl(base + EMIF_SDRAM_REFRESH_CONTROL) & ~REFRESH_RATE_MASK) |
+	       (ref_ctrl & REFRESH_RATE_MASK), base + EMIF_SDRAM_REFRESH_CONTROL);
+	writel(tim1, base + EMIF_SDRAM_TIMING_1);
+	writel(tim3, base + EMIF_SDRAM_TIMING_3);
+}
+
+static u32 tim1_add_cycle(struct emif_data *emif, u32 tim1, u32 mask, u32 shift)
+{
+	u32 val = (tim1 & mask) >> shift;
+
+	if (val == mask >> shift) {
+		dev_warn(emif->dev, "TIM_1 field 0x%08x at its maximum, can't de-rate it\n",
+			 mask);
+		return tim1;
+	}
+
+	return (tim1 & ~mask) | ((val + 1) << shift);
+}
+
+/*
+ * Without frequency change support, the timings in effect are the ones the
+ * bootloader programmed for the DDR clock it set up. Take them as the
+ * nominal values and derive the de-rated ones for a temperature alert
+ * (JESD209-2 above 85 °C): refresh four times as often, and tRCD, tRC,
+ * tRAS, tRP and tRRD 1.875 ns longer, which is one clock at any LPDDR2
+ * frequency (tCK >= 1.875 ns). The TIM_1 fields hold "cycles - 1".
+ */
+static void emif_regs_from_hw(struct emif_data *emif)
+{
+	void __iomem		*base = emif->base;
+	struct emif_regs	*regs;
+	u32			tim1;
+
+	regs = devm_kzalloc(emif->dev, sizeof(*regs), GFP_KERNEL);
+	if (!regs)
+		return;
+
+	regs->ref_ctrl_shdw = readl(base + EMIF_SDRAM_REFRESH_CONTROL) &
+			      REFRESH_RATE_MASK;
+	regs->ref_ctrl_shdw_derated = regs->ref_ctrl_shdw / 4;
+
+	tim1 = readl(base + EMIF_SDRAM_TIMING_1);
+	regs->sdram_tim1_shdw = tim1;
+	tim1 = tim1_add_cycle(emif, tim1, T_RP_MASK, T_RP_SHIFT);
+	tim1 = tim1_add_cycle(emif, tim1, T_RCD_MASK, T_RCD_SHIFT);
+	tim1 = tim1_add_cycle(emif, tim1, T_RAS_MASK, T_RAS_SHIFT);
+	tim1 = tim1_add_cycle(emif, tim1, T_RC_MASK, T_RC_SHIFT);
+	tim1 = tim1_add_cycle(emif, tim1, T_RRD_MASK, T_RRD_SHIFT);
+	regs->sdram_tim1_shdw_derated = tim1;
+
+	regs->sdram_tim2_shdw = readl(base + EMIF_SDRAM_TIMING_2);
+	regs->sdram_tim3_shdw = readl(base + EMIF_SDRAM_TIMING_3);
+	regs->sdram_tim3_shdw_derated = regs->sdram_tim3_shdw;
+
+	dev_info(emif->dev, "timings from bootloader: REF_CTRL 0x%04x TIM_1 0x%08x, de-rated 0x%04x 0x%08x\n",
+		 regs->ref_ctrl_shdw, regs->sdram_tim1_shdw,
+		 regs->ref_ctrl_shdw_derated, regs->sdram_tim1_shdw_derated);
+
+	emif->regs_cache[0] = regs;
+	emif->curr_regs = regs;
 }
 
 static irqreturn_t handle_temp_alert(void __iomem *base, struct emif_data *emif)
@@ -535,6 +605,9 @@ static irqreturn_t handle_temp_alert(void __iomem *base, struct emif_data *emif)
 		dev_err(emif->dev, "temperature alert before registers are calculated, not de-rating timings\n");
 		return IRQ_HANDLED;
 	}
+
+	dev_info(emif->dev, "SDRAM temperature level (MR4) %u -> %u\n",
+		 old_temp_level, emif->temperature_level);
 
 	custom_configs = emif->plat_data->custom_configs;
 
@@ -1122,6 +1195,15 @@ static int emif_probe(struct platform_device *pdev)
 		goto error;
 
 	emif_onetime_settings(emif);
+	emif_regs_from_hw(emif);
+	if (emif->curr_regs &&
+	    emif->temperature_level > SDRAM_TEMP_NOMINAL &&
+	    emif->temperature_level < SDRAM_TEMP_VERY_HIGH_SHUTDOWN) {
+		dev_warn(emif->dev, "SDRAM temperature level (MR4) %u at probe, de-rating\n",
+			 emif->temperature_level);
+		scoped_guard(spinlock_irqsave, &emif_lock)
+			setup_temperature_sensitive_regs(emif, emif->curr_regs);
+	}
 	emif_debugfs_init(emif);
 	disable_and_clear_all_interrupts(emif);
 	ret = setup_interrupts(emif, irq);
