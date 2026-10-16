@@ -356,6 +356,8 @@ static struct clockdomain iss_44xx_clkdm = {
 	.clkdm_offs	  = OMAP4430_CM2_CAM_CAM_CDOFFS,
 	.wkdep_srcs	  = iss_wkup_sleep_deps,
 	.sleepdep_srcs	  = iss_wkup_sleep_deps,
+	/* erratum i740: L3_2 must not be in HW_AUTO while ISS is on */
+	.noidle_clkdm_name = "l3_2_clkdm",
 	.flags		  = CLKDM_CAN_SWSUP,
 };
 
@@ -368,6 +370,8 @@ static struct clockdomain l3_dss_44xx_clkdm = {
 	.dep_bit	  = OMAP4430_DSS_STATDEP_SHIFT,
 	.wkdep_srcs	  = l3_dss_wkup_sleep_deps,
 	.sleepdep_srcs	  = l3_dss_wkup_sleep_deps,
+	/* erratum i740: L3_1 must not be in HW_AUTO while DSS is on */
+	.noidle_clkdm_name = "l3_1_clkdm",
 	.flags		  = CLKDM_CAN_HWSUP_SWSUP,
 };
 

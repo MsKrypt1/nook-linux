@@ -111,6 +111,8 @@ struct omap_hwmod;
  * @clkdm_offs: (OMAP4 only) CM clockdomain register offset
  * @wkdep_srcs: Clockdomains that can be told to wake this powerdomain up
  * @sleepdep_srcs: Clockdomains that can be told to keep this clkdm from inact
+ * @noidle_clkdm_name: clockdomain to keep out of idle while this one is in use
+ * @noidle_clkdm: @noidle_clkdm_name, resolved by clkdm_complete_init()
  * @usecount: Usecount tracking
  * @forcewake_count: Usecount for forcing the domain active
  * @node: list_head to link all clockdomains together
@@ -136,6 +138,8 @@ struct clockdomain {
 	const u16 clkdm_offs;
 	struct clkdm_dep *wkdep_srcs;
 	struct clkdm_dep *sleepdep_srcs;
+	const char *noidle_clkdm_name;
+	struct clockdomain *noidle_clkdm;
 	int usecount;
 	int forcewake_count;
 	struct list_head node;
