@@ -25,12 +25,14 @@
  */
 
 #include <linux/clk.h>
+#include <linux/delay.h>
 #include <linux/init.h>
 #include <linux/time.h>
 #include <linux/sched_clock.h>
 #include <linux/clocksource.h>
 #include <linux/of.h>
 #include <linux/of_address.h>
+#include <linux/syscore_ops.h>
 
 /*
  * 32KHz clocksource ... always available, on pretty most chips except
@@ -43,6 +45,9 @@
 #define OMAP2_32KSYNCNT_REV_SCHEME	(0x3 << 30)
 #define OMAP2_32KSYNCNT_CR_OFF_LOW	0x10
 #define OMAP2_32KSYNCNT_CR_OFF_HIGH	0x30
+#define OMAP2_32KSYNCNT_SYSC_OFF	0x4
+#define OMAP2_32KSYNCNT_SIDLE_FORCE	(0x0 << 3)
+#define OMAP2_32KSYNCNT_SIDLE_NO	(0x1 << 3)
 
 struct ti_32k {
 	void __iomem		*base;
@@ -70,6 +75,40 @@ static struct ti_32k ti_32k_timer = {
 		.mask		= CLOCKSOURCE_MASK(32),
 		.flags		= CLOCK_SOURCE_IS_CONTINUOUS,
 	},
+};
+
+/*
+ * With ti,no-idle on the target module the counter runs in no-idle, see
+ * ti_32k_timer_module_init(). Keep suspend as before: force-idle. These
+ * syscore ops are registered before timekeeping's and sched_clock's, so
+ * they run after those on suspend and before them on resume.
+ */
+static int ti_32k_suspend(void *data)
+{
+	writel_relaxed(OMAP2_32KSYNCNT_SIDLE_FORCE,
+		       ti_32k_timer.base + OMAP2_32KSYNCNT_SYSC_OFF);
+	return 0;
+}
+
+static void ti_32k_resume(void *data)
+{
+	writel_relaxed(OMAP2_32KSYNCNT_SIDLE_NO,
+		       ti_32k_timer.base + OMAP2_32KSYNCNT_SYSC_OFF);
+	readl_relaxed(ti_32k_timer.base + OMAP2_32KSYNCNT_SYSC_OFF);
+	/*
+	 * Erratum i103: wait 2 interface + 1 functional clock cycles after
+	 * the interface clock restarts before reading 32KSYNCNT_CR.
+	 */
+	udelay(62);
+}
+
+static const struct syscore_ops ti_32k_syscore_ops = {
+	.suspend	= ti_32k_suspend,
+	.resume		= ti_32k_resume,
+};
+
+static struct syscore ti_32k_syscore = {
+	.ops = &ti_32k_syscore_ops,
 };
 
 static u64 notrace omap_32k_read_sched_clock(void)
@@ -112,6 +151,19 @@ static void __init ti_32k_timer_module_init(struct device_node *np,
 
 	ti_32k_timer_enable_clock(np, "fck");
 	ti_32k_timer_enable_clock(np, "ick");
+
+	/*
+	 * In force-idle the interface clock can gate between reads, and a
+	 * read right after it restarts may be wrong (erratum i103). Where
+	 * the wkup domain is not kept active with the MPU, the DT marks the
+	 * module ti,no-idle: keep it in no-idle and force-idle only in
+	 * suspend. ti-sysc then leaves the module alone.
+	 */
+	if (of_property_read_bool(np->parent, "ti,no-idle")) {
+		writel_relaxed(OMAP2_32KSYNCNT_SIDLE_NO, sysc);
+		register_syscore(&ti_32k_syscore);
+		return;
+	}
 
 	/*
 	 * Force idle module as wkup domain is active with MPU.
