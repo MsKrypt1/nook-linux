@@ -90,7 +90,12 @@
 		enable-active-high;
 	};
 
-	/* LCD Display Voltage Regulator */
+	/*
+	 * LCD and touchscreen VDD (3.3 V), shared by the panel and the FT5x06:
+	 * it goes off only when both have released it (suspend). Panel
+	 * datasheet (LTL090CL01-W 5.7): VDD rise T1 <= 10 ms, off time
+	 * T4 >= 500 ms.
+	 */
 	vdd_lcdtp: vdd-lcdtp {
 		compatible = "regulator-fixed";
 		regulator-name = "vdd_lcdtp";
@@ -100,8 +105,9 @@
 		pinctrl-0 = <&reg_vdd_lcdtp_pins>;
 		gpio = <&gpio2 4 0>;
 		enable-active-high;
+		startup-delay-us = <10000>;
+		off-on-delay-us = <500000>;
 		regulator-boot-on;
-		regulator-always-on;
 	};
 
 	/* TWL6032 PMIC I2C Pullup Configuration */
