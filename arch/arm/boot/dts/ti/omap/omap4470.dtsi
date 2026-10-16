@@ -76,7 +76,7 @@
 			reg = <0x4a002260 0x4
 			       0x4a00232C 0x4
 			       0x4a002378 0x18>;
-			compatible = "ti,omap4460-bandgap";
+			compatible = "ti,omap4470-bandgap";
 			interrupts = <0 126 IRQ_TYPE_LEVEL_HIGH>; /* talert */
 			gpios = <&gpio3 22 GPIO_ACTIVE_HIGH>; /* tshut */
 
@@ -142,7 +142,8 @@
 
 &cpu_thermal {
 	thermal-sensors = <&bandgap>;
-	coefficients = <348 (-9301)>;
+	/* Hotspot gradient for the 4470 (vendor omap_die_governor.c) */
+	coefficients = <308 (-7896)>;
 };
 
 /* Only some L4 CFG interconnect ranges are different on 4460 */
