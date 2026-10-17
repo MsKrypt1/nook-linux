@@ -3,9 +3,9 @@
  * Samsung LTL090CL01 9" 1920x1280 MIPI DSI panel
  *
  * The panel takes RGB666 over four DSI lanes in DE-only video mode and
- * needs no initialization commands. Besides VDD it has two control inputs:
- * CABC_EN (content adaptive brightness control) and CM_EN (color
- * management).
+ * needs no initialization commands to show a picture. Besides VDD it has
+ * two control inputs: CABC_EN (content adaptive brightness control) and
+ * CM_EN (color management).
  *
  * Power sequence from the datasheet (LTL090CL01-W, section 5.7):
  *   T2  90..120 ms  VDD on to valid data
@@ -41,11 +41,80 @@ struct ltl090cl01 {
 	bool powered_off;
 	struct gpio_desc *cabc_gpio;
 	struct gpio_desc *cm_gpio;
+
+	/* the TCON registers are at their reset values (boot, power cut) */
+	bool tcon_reset;
 };
 
 static inline struct ltl090cl01 *to_ltl090cl01(struct drm_panel *panel)
 {
 	return container_of(panel, struct ltl090cl01, panel);
+}
+
+/*
+ * The panel's timing controller is a Novatek TCON. Its registers sit in
+ * pages: F3h A0h+page unlocks a page for the next access and an empty
+ * generic write locks it again (vendor panel-novatek.c).
+ */
+static int ltl090cl01_tcon_unlock(struct ltl090cl01 *ctx, u8 page)
+{
+	u8 unlock[] = { 0xf3, 0xa0 + page };
+	ssize_t ret;
+
+	ret = mipi_dsi_generic_write(ctx->dsi, unlock, sizeof(unlock));
+
+	return ret < 0 ? ret : 0;
+}
+
+static int ltl090cl01_tcon_lock(struct ltl090cl01 *ctx)
+{
+	ssize_t ret;
+
+	ret = mipi_dsi_generic_write(ctx->dsi, NULL, 0);
+
+	return ret < 0 ? ret : 0;
+}
+
+static int ltl090cl01_tcon_write(struct ltl090cl01 *ctx, u8 page, u8 reg,
+				 u8 val)
+{
+	u8 buf[] = { reg, val };
+	ssize_t ret;
+	int err;
+
+	ret = ltl090cl01_tcon_unlock(ctx, page);
+	if (ret)
+		return ret;
+
+	ret = mipi_dsi_generic_write(ctx->dsi, buf, sizeof(buf));
+
+	/* lock the page again even after a failed write */
+	err = ltl090cl01_tcon_lock(ctx);
+
+	return ret < 0 ? ret : err;
+}
+
+/*
+ * The TCON does content adaptive backlight control on its own: it scales
+ * the backlight PWM (PWM_IN to PWM_OUT) down on dark content, with CABC_EN
+ * high or low, and keeps it at full while anything bright is on screen. The
+ * vendor driver's CABC registers (page 0 0xE5 "abrupt threshold", 0xEA)
+ * made no measurable difference. Stock set 0xE5 to 0 after each power-on;
+ * do the same. The registers keep their values until VDD goes off.
+ */
+static int ltl090cl01_tcon_init(struct ltl090cl01 *ctx)
+{
+	int ret;
+
+	/*
+	 * The first transaction after the video stream stopped is answered
+	 * with the errors the panel latched then, which clears them.
+	 */
+	ret = ltl090cl01_tcon_write(ctx, 0, 0xe5, 0x00);
+	if (ret)
+		ret = ltl090cl01_tcon_write(ctx, 0, 0xe5, 0x00);
+
+	return ret;
 }
 
 static int ltl090cl01_prepare(struct drm_panel *panel)
@@ -73,6 +142,13 @@ static int ltl090cl01_prepare(struct drm_panel *panel)
 				ret);
 	}
 
+	if (READ_ONCE(ctx->tcon_reset)) {
+		WRITE_ONCE(ctx->tcon_reset, false);
+		ret = ltl090cl01_tcon_init(ctx);
+		if (ret)
+			dev_err(panel->dev, "failed to set up TCON: %d\n", ret);
+	}
+
 	return 0;
 }
 
@@ -97,8 +173,10 @@ static int ltl090cl01_supply_event(struct notifier_block *nb,
 {
 	struct ltl090cl01 *ctx = container_of(nb, struct ltl090cl01, supply_nb);
 
-	if (event & REGULATOR_EVENT_DISABLE)
+	if (event & REGULATOR_EVENT_DISABLE) {
 		WRITE_ONCE(ctx->powered_off, true);
+		WRITE_ONCE(ctx->tcon_reset, true);
+	}
 
 	return NOTIFY_OK;
 }
@@ -186,6 +264,8 @@ static int ltl090cl01_probe(struct mipi_dsi_device *dsi)
 
 	/* A panel left on by the boot loader has had its Turn On Peripheral */
 	ctx->powered_off = !regulator_is_enabled(ctx->supply);
+	/* but the boot loader sends no TCON commands */
+	ctx->tcon_reset = true;
 	ctx->supply_nb.notifier_call = ltl090cl01_supply_event;
 	ret = devm_regulator_register_notifier(ctx->supply, &ctx->supply_nb);
 	if (ret)
