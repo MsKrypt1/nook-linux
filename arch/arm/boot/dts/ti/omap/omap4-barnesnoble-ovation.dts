@@ -420,6 +420,10 @@
 		pinctrl-0 = <&kxtf9_pins>;
 		interrupt-parent = <&gpio5>;
 		interrupts = <24 1>;
+		/* Measured: the panel's landscape frame is (-y, -x, -z) of the chip's */
+		mount-matrix = "0", "-1", "0",
+			       "-1", "0", "0",
+			       "0", "0", "-1";
 	};
 
 	/* PMIC */
