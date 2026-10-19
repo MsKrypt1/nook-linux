@@ -85,6 +85,7 @@ struct omap4_keypad {
 	u64 keys;
 	unsigned short *keymap;
 	struct clk *fck;
+	bool irq_deferred;		/* irq masked until system resume */
 };
 
 static int kbd_readl(struct omap4_keypad *keypad_data, u32 offset)
@@ -180,6 +181,16 @@ static irqreturn_t omap4_keypad_irq_thread_fn(int irq, void *dev_id)
 	u64 keys;
 
 	error = pm_runtime_resume_and_get(dev);
+	if (error == -EACCES) {
+		/*
+		 * A wakeup irq from system suspend runs before runtime PM is
+		 * enabled again in the resume_early phase. The level irq would
+		 * fire until then: mask it and handle the keys on resume.
+		 */
+		disable_irq_nosync(irq);
+		keypad_data->irq_deferred = true;
+		return IRQ_HANDLED;
+	}
 	if (error)
 		return IRQ_NONE;
 
@@ -332,7 +343,21 @@ static int omap4_keypad_runtime_suspend(struct device *dev)
 	return 0;
 }
 
+static int omap4_keypad_resume(struct device *dev)
+{
+	struct omap4_keypad *keypad_data = dev_get_drvdata(dev);
+
+	synchronize_irq(keypad_data->irq);
+	if (keypad_data->irq_deferred) {
+		keypad_data->irq_deferred = false;
+		enable_irq(keypad_data->irq);
+	}
+
+	return 0;
+}
+
 static const struct dev_pm_ops omap4_keypad_pm_ops = {
+	SYSTEM_SLEEP_PM_OPS(NULL, omap4_keypad_resume)
 	RUNTIME_PM_OPS(omap4_keypad_runtime_suspend, NULL, NULL)
 };
 
