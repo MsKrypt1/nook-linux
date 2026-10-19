@@ -690,7 +690,7 @@ static int kxcjk1013_setup_interrupt(struct kxcjk1013_data *data,
 	if (ret < 0)
 		return ret;
 
-	if (is_new_data == true) {
+	if (!is_new_data) {
 		ret = kxcjk1013_chip_update_thresholds(data);
 		if (ret < 0)
 			return ret;
