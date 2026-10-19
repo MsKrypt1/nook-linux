@@ -55,7 +55,6 @@
 		startup-delay-us = <200>;
 		enable-active-high;
 		regulator-boot-on;
-		regulator-always-on;
 	};
 
 	/* WLAN Core Voltage Regulator */
@@ -750,6 +749,8 @@
 		pinctrl-names = "default";
 		pinctrl-0 = <&bt_pins>;
 		enable-gpios = <&gpio3 19 GPIO_ACTIVE_HIGH>;	/* gpio_83 */
+		vbat-supply = <&vsys_wlan>;
+		vio-supply = <&ldo7>;
 		clocks = <&twl6032 0>;
 		clock-names = "ext_clock";
 	};
