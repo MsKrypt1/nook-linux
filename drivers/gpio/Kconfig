@@ -1772,6 +1772,14 @@ config GPIO_TWL4030
 	  Say yes here to access the GPIO signals of various multi-function
 	  power management chips from Texas Instruments.
 
+config GPIO_TWL6030_MMC_CD
+	tristate "TWL6030 SD card detect"
+	depends on TWL4030_CORE
+	help
+	  Say yes here to use the SD card detect of the TWL6030 and
+	  TWL6032 power management chips (for MMC1) as a GPIO, the
+	  card-detect line of the MMC host.
+
 config GPIO_TWL6040
 	tristate "TWL6040 GPO"
 	depends on TWL6040_CORE
