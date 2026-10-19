@@ -36,6 +36,7 @@
 #include <linux/skbuff.h>
 #include <linux/ti_wilink_st.h>
 #include <linux/clk.h>
+#include <linux/regulator/consumer.h>
 
 #include <net/bluetooth/bluetooth.h>
 #include <net/bluetooth/hci_core.h>
@@ -67,6 +68,8 @@ struct ll_device {
 	struct serdev_device *serdev;
 	struct gpio_desc *enable_gpio;
 	struct clk *ext_clk;
+	struct regulator_bulk_data supplies[2];
+	bool powered;
 	bdaddr_t bdaddr;
 };
 
@@ -107,6 +110,41 @@ out:
 	return err;
 }
 
+/* Supplies and slow clock, from ll_setup(); it drives BT_EN */
+static int ll_power_on(struct ll_device *lldev)
+{
+	int err;
+
+	if (lldev->powered)
+		return 0;
+
+	err = regulator_bulk_enable(ARRAY_SIZE(lldev->supplies),
+				    lldev->supplies);
+	if (err)
+		return err;
+
+	err = clk_prepare_enable(lldev->ext_clk);
+	if (err) {
+		regulator_bulk_disable(ARRAY_SIZE(lldev->supplies),
+				       lldev->supplies);
+		return err;
+	}
+
+	lldev->powered = true;
+	return 0;
+}
+
+static void ll_power_off(struct ll_device *lldev)
+{
+	if (!lldev->powered)
+		return;
+
+	gpiod_set_value_cansleep(lldev->enable_gpio, 0);
+	clk_disable_unprepare(lldev->ext_clk);
+	regulator_bulk_disable(ARRAY_SIZE(lldev->supplies), lldev->supplies);
+	lldev->powered = false;
+}
+
 /* Initialize protocol */
 static int ll_open(struct hci_uart *hu)
 {
@@ -125,13 +163,6 @@ static int ll_open(struct hci_uart *hu)
 	ll->hcill_state = HCILL_AWAKE;
 
 	hu->priv = ll;
-
-	if (hu->serdev) {
-		struct ll_device *lldev = serdev_device_get_drvdata(hu->serdev);
-
-		if (!IS_ERR(lldev->ext_clk))
-			clk_prepare_enable(lldev->ext_clk);
-	}
 
 	return 0;
 }
@@ -164,9 +195,7 @@ static int ll_close(struct hci_uart *hu)
 	if (hu->serdev) {
 		struct ll_device *lldev = serdev_device_get_drvdata(hu->serdev);
 
-		gpiod_set_value_cansleep(lldev->enable_gpio, 0);
-
-		clk_disable_unprepare(lldev->ext_clk);
+		ll_power_off(lldev);
 	}
 
 	hu->priv = NULL;
@@ -605,11 +634,27 @@ static int ll_set_bdaddr(struct hci_dev *hdev, const bdaddr_t *bdaddr)
 	return PTR_ERR_OR_ZERO(skb);
 }
 
+/*
+ * Power the chip off while the HCI device is down. With
+ * HCI_QUIRK_NON_PERSISTENT_SETUP the next power-on runs ll_setup()
+ * again, which resets the chip and downloads its firmware.
+ */
+static int ll_shutdown(struct hci_dev *hdev)
+{
+	struct hci_uart *hu = hci_get_drvdata(hdev);
+
+	ll_power_off(serdev_device_get_drvdata(hu->serdev));
+
+	return 0;
+}
+
 static int ll_setup(struct hci_uart *hu)
 {
 	int err, retry = 3;
 	struct ll_device *lldev;
 	struct serdev_device *serdev = hu->serdev;
+	struct ll_struct *ll = hu->priv;
+	unsigned long flags;
 	u32 speed;
 
 	if (!serdev)
@@ -618,6 +663,17 @@ static int ll_setup(struct hci_uart *hu)
 	lldev = serdev_device_get_drvdata(serdev);
 
 	hu->hdev->set_bdaddr = ll_set_bdaddr;
+	hu->hdev->shutdown = ll_shutdown;
+	set_bit(HCI_QUIRK_NON_PERSISTENT_SETUP, &hu->hdev->quirks);
+
+	err = ll_power_on(lldev);
+	if (err)
+		return err;
+
+	/* The chip comes out of the reset below awake */
+	spin_lock_irqsave(&ll->hcill_lock, flags);
+	ll->hcill_state = HCILL_AWAKE;
+	spin_unlock_irqrestore(&ll->hcill_lock, flags);
 
 	serdev_device_set_flow_control(serdev, true);
 
@@ -630,6 +686,7 @@ static int ll_setup(struct hci_uart *hu)
 		err = serdev_device_wait_for_cts(serdev, true, 200);
 		if (err) {
 			bt_dev_err(hu->hdev, "Failed to get CTS");
+			ll_power_off(lldev);
 			return err;
 		}
 
@@ -641,8 +698,10 @@ static int ll_setup(struct hci_uart *hu)
 		bt_dev_err(hu->hdev, "download firmware failed, retrying...");
 	} while (retry--);
 
-	if (err)
+	if (err) {
+		ll_power_off(lldev);
 		return err;
+	}
 
 	/* Set BD address if one was specified at probe */
 	if (!bacmp(&lldev->bdaddr, BDADDR_NONE)) {
@@ -688,6 +747,7 @@ static int hci_ti_probe(struct serdev_device *serdev)
 	struct ll_device *lldev;
 	struct nvmem_cell *bdaddr_cell;
 	u32 max_speed = 3000000;
+	int ret;
 
 	lldev = devm_kzalloc(&serdev->dev, sizeof(struct ll_device), GFP_KERNEL);
 	if (!lldev)
@@ -703,9 +763,17 @@ static int hci_ti_probe(struct serdev_device *serdev)
 	if (IS_ERR(lldev->enable_gpio))
 		return PTR_ERR(lldev->enable_gpio);
 
-	lldev->ext_clk = devm_clk_get(&serdev->dev, "ext_clock");
-	if (IS_ERR(lldev->ext_clk) && PTR_ERR(lldev->ext_clk) != -ENOENT)
+	lldev->ext_clk = devm_clk_get_optional(&serdev->dev, "ext_clock");
+	if (IS_ERR(lldev->ext_clk))
 		return PTR_ERR(lldev->ext_clk);
+
+	lldev->supplies[0].supply = "vbat";
+	lldev->supplies[1].supply = "vio";
+	ret = devm_regulator_bulk_get(&serdev->dev,
+				      ARRAY_SIZE(lldev->supplies),
+				      lldev->supplies);
+	if (ret)
+		return ret;
 
 	of_property_read_u32(serdev->dev.of_node, "max-speed", &max_speed);
 	hci_uart_set_speeds(hu, 115200, max_speed);
