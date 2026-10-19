@@ -587,6 +587,14 @@
 			compatible = "ti,twl4030-rtc";
 			interrupts = <11>;
 		};
+
+		/* SD card detect switch of MMC1, through the MMC interrupt */
+		twl_mmc_cd: mmc-cd {
+			compatible = "ti,twl6030-mmc-cd";
+			interrupts = <16>;
+			gpio-controller;
+			#gpio-cells = <2>;
+		};
 	};
 
 	/*
@@ -755,7 +763,7 @@
 	vmmc-supply = <&ldo5>;
 	mmc-ddr-1_8v;
 	bus-width = <4>;
-	broken-cd;
+	cd-gpios = <&twl_mmc_cd 0 GPIO_ACTIVE_HIGH>;
 	no-sdio;
 	no-mmc;
 };
