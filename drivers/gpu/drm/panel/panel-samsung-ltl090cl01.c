@@ -32,6 +32,8 @@
 #include <drm/drm_modes.h>
 #include <drm/drm_panel.h>
 
+#include <video/mipi_display.h>
+
 struct ltl090cl01 {
 	struct drm_panel panel;
 	struct mipi_dsi_device *dsi;
@@ -104,17 +106,43 @@ static int ltl090cl01_tcon_write(struct ltl090cl01 *ctx, u8 page, u8 reg,
  */
 static int ltl090cl01_tcon_init(struct ltl090cl01 *ctx)
 {
-	int ret;
+	return ltl090cl01_tcon_write(ctx, 0, 0xe5, 0x00);
+}
 
-	/*
-	 * The first transaction after the video stream stopped is answered
-	 * with the errors the panel latched then, which clears them.
-	 */
-	ret = ltl090cl01_tcon_write(ctx, 0, 0xe5, 0x00);
-	if (ret)
-		ret = ltl090cl01_tcon_write(ctx, 0, 0xe5, 0x00);
+/*
+ * When the video stream stops (at boot, the boot loader's), the panel
+ * latches errors (HS receive timeout, often also false control and ECC
+ * errors) and reports them in the acknowledge of the next transaction,
+ * which then fails. Collect and clear them with a NOP.
+ */
+static int ltl090cl01_clear_errors(struct ltl090cl01 *ctx)
+{
+	struct mipi_dsi_device *dsi = ctx->dsi;
+	u8 nop = MIPI_DCS_NOP, report[2] = { 0 };
+	struct mipi_dsi_msg msg = {
+		.channel = dsi->channel,
+		.type = MIPI_DSI_DCS_SHORT_WRITE,
+		.flags = MIPI_DSI_MSG_REQ_ACK,
+		.tx_len = sizeof(nop),
+		.tx_buf = &nop,
+		.rx_len = sizeof(report),
+		.rx_buf = report,
+	};
+	ssize_t ret;
+	u16 err;
 
-	return ret;
+	/* the DSI core has no helper that takes message flags */
+	ret = dsi->host->ops->transfer(dsi->host, &msg);
+	if (ret < 0)
+		return ret;
+
+	err = report[0] | report[1] << 8;
+	if (err)
+		dev_info(&dsi->dev,
+			 "cleared DSI errors %#06x the panel latched when the video stream stopped\n",
+			 err);
+
+	return 0;
 }
 
 static int ltl090cl01_prepare(struct drm_panel *panel)
@@ -144,7 +172,9 @@ static int ltl090cl01_prepare(struct drm_panel *panel)
 
 	if (READ_ONCE(ctx->tcon_reset)) {
 		WRITE_ONCE(ctx->tcon_reset, false);
-		ret = ltl090cl01_tcon_init(ctx);
+		ret = ltl090cl01_clear_errors(ctx);
+		if (!ret)
+			ret = ltl090cl01_tcon_init(ctx);
 		if (ret)
 			dev_err(panel->dev, "failed to set up TCON: %d\n", ret);
 	}
