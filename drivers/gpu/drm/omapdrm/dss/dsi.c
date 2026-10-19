@@ -2224,6 +2224,33 @@ static int dsi_vc_write_common(struct omap_dss_device *dssdev, int vc,
 		return r;
 	}
 
+	/*
+	 * A caller that requests the acknowledge and passes a 2-byte rx_buf
+	 * gets the peripheral's Acknowledge and Error Report there (0 if it
+	 * reported nothing), e.g. to clear and log errors the peripheral
+	 * latched while the video stream stopped.
+	 */
+	if ((msg->flags & MIPI_DSI_MSG_REQ_ACK) && msg->rx_len >= 2) {
+		u16 err = 0;
+		u32 val;
+
+		/* RX_FIFO_NOT_EMPTY */
+		if (REG_GET(dsi, DSI_VC_CTRL(vc), 20, 20)) {
+			val = dsi_read_reg(dsi, DSI_VC_SHORT_PACKET_HEADER(vc));
+			if (FLD_GET(val, 5, 0) !=
+			    MIPI_DSI_RX_ACKNOWLEDGE_AND_ERROR_REPORT) {
+				DSSERR("unexpected packet %#08x after write\n",
+				       val);
+				dsi_vc_flush_receive_data(dsi, vc);
+				return -EIO;
+			}
+			err = FLD_GET(val, 23, 8);
+		}
+
+		((u8 *)msg->rx_buf)[0] = err & 0xff;
+		((u8 *)msg->rx_buf)[1] = err >> 8;
+	}
+
 	/* RX_FIFO_NOT_EMPTY */
 	if (REG_GET(dsi, DSI_VC_CTRL(vc), 20, 20)) {
 		DSSERR("rx fifo not empty after write, dumping data:\n");
