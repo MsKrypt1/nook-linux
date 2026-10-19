@@ -200,4 +200,11 @@
 		     <GIC_SPI 55 IRQ_TYPE_LEVEL_HIGH>;
 };
 
+/* The 4470 has an SGX544 MP1 (rev 112), not the 4430/4460 SGX540 */
+&sgx_module {
+	gpu@0 {
+		compatible = "ti,omap4470-gpu", "img,powervr-sgx544";
+	};
+};
+
 /include/ "omap446x-clocks.dtsi"
