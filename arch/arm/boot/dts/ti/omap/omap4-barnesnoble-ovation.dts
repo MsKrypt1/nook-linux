@@ -6,6 +6,7 @@
 
 #include <dt-bindings/input/input.h>
 #include "omap4470.dtsi"
+#include "omap4-mcpdm.dtsi"
 
 / {
 	model = "Barnes & Noble Nook HD+ (Ovation)";
@@ -108,6 +109,66 @@
 		startup-delay-us = <10000>;
 		off-on-delay-us = <500000>;
 		regulator-boot-on;
+	};
+
+	/*
+	 * TWL6041 supplies: VIO is the TWL6032 VIO SMPS (1.8 V), V2V1 its
+	 * SMPS4 (2.1 V, the TWL6030's V2V1). Both are on from OTP and feed
+	 * other loads too, so they are not switched from here.
+	 */
+	vio: regulator-vio {
+		compatible = "regulator-fixed";
+		regulator-name = "vio";
+		regulator-min-microvolt = <1800000>;
+		regulator-max-microvolt = <1800000>;
+		regulator-always-on;
+		regulator-boot-on;
+	};
+
+	v2v1: regulator-v2v1 {
+		compatible = "regulator-fixed";
+		regulator-name = "v2v1";
+		regulator-min-microvolt = <2100000>;
+		regulator-max-microvolt = <2100000>;
+		regulator-always-on;
+		regulator-boot-on;
+	};
+
+	/*
+	 * VDDHF, the supply of the TWL6041 handsfree (speaker) drivers, is
+	 * switched by the codec's GPO1 (vendor board-bn-power.c, vddhf_gpo).
+	 */
+	vddhf: regulator-vddhf {
+		compatible = "regulator-fixed";
+		regulator-name = "vddhf";
+		gpio = <&twl6040 0 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
+	};
+
+	/*
+	 * Speakers on HFL/HFR (PDM downlink channels 3/4: a stream needs four
+	 * channels to reach them), headset jack on HSOL/HSOR and HSMIC, line
+	 * out (AUXL/AUXR) on the 30-pin connector. The built-in mic is the
+	 * digital one; MAINMIC and SUBMIC are not connected.
+	 */
+	sound: sound {
+		compatible = "ti,abe-twl6040";
+		ti,model = "NookHDPlus";
+		ti,jack-detection;
+		ti,mclk-freq = <38400000>;
+		ti,mcpdm = <&mcpdm>;
+		ti,dmic = <&dmic>;
+		ti,twl6040 = <&twl6040>;
+
+		ti,audio-routing =
+			"Headset Stereophone", "HSOL",
+			"Headset Stereophone", "HSOR",
+			"Ext Spk", "HFL",
+			"Ext Spk", "HFR",
+			"Line Out", "AUXL",
+			"Line Out", "AUXR",
+			"HSMIC", "Headset Mic",
+			"Headset Mic", "Headset Mic Bias";
 	};
 
 	/* TWL6032 PMIC I2C Pullup Configuration */
@@ -338,9 +399,18 @@
 		pinctrl-single,pins = <0xe2 0x118 0xe4 0x118>;
 	};
 
-	/* TWL Audio Pins */
-	twl_audio_pins: twl-audio-pins {
-		pinctrl-single,pins = <0xba 0x03>;
+	/*
+	 * Built-in digital mic: data on abe_dmic_din2, clock on the
+	 * abe_dmic_din3 pad as abe_dmic_clk2 (abe_dmic_clk1 and din1 are
+	 * UART4 CTS/RTS). As u-boot leaves them.
+	 */
+	dmic_pins: dmic-pins {
+		pinctrl-single,pins = <0xd4 0x108 0xd6 0x02>;
+	};
+
+	/* TWL6041: AUDPWRON (abe_mcbsp2_dx.gpio_112), NAUDINT (sys_nirq2) */
+	twl6040_pins: twl6040-pins {
+		pinctrl-single,pins = <0xba 0x03 0x160 0x118>;
 	};
 
 	/* Accelerometer (KXTF9) */
@@ -444,6 +514,28 @@
 			compatible = "ti,twl4030-rtc";
 			interrupts = <11>;
 		};
+	};
+
+	/*
+	 * Audio codec, TWL6041 ES2.0 (ASICREV 0x10). CLK32KAUDIO feeds its
+	 * low-power PLL, auxclk1 (fref_clk1_out, 38.4 MHz) its MCLK for the
+	 * high-performance PLL.
+	 */
+	twl6040: twl@4b {
+		compatible = "ti,twl6041";
+		reg = <0x4b>;
+		#clock-cells = <0>;
+		gpio-controller;
+		#gpio-cells = <2>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&twl6040_pins>;
+		interrupts = <GIC_SPI 119 IRQ_TYPE_LEVEL_HIGH>; /* sys_nirq2 */
+		ti,audpwron-gpio = <&gpio4 16 GPIO_ACTIVE_HIGH>; /* gpio_112 */
+		vio-supply = <&vio>;
+		v2v1-supply = <&v2v1>;
+		vddhf-supply = <&vddhf>;
+		clocks = <&twl6032 1>, <&auxclk1_ck>;
+		clock-names = "clk32k", "mclk";
 	};
 
 	/* Battery Gauge */
@@ -833,16 +925,12 @@
 		#io-channel-cells = <1>;
 		interrupts = <3>;
 	};
+};
 
-	/* Audio Codec */
-	audio-codec@4c {
-		pinctrl-names = "default";
-		pinctrl-0 = <&twl_audio_pins>;
-		compatible = "ti,twl6041";
-		reg = <0x4c>;
-		interrupts = <0 0x77 0x04>;
-		ti,audpwron-gpio = <&gpio4 16 0>;
-	};
+&dmic {
+	pinctrl-names = "default";
+	pinctrl-0 = <&dmic_pins>;
+	status = "okay";
 };
 
 &dss {
