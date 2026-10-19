@@ -624,6 +624,8 @@
 		interrupts = <14 2>;
 		omit-battery-class;
 		ti,system-minimum-microvolt = <3400000>;
+		/* B&N's driver: 1012 mA below 16 °C, 1024 mA on the ICHG grid */
+		ti,cold-charge-current-microamp = <1024000>;
 	};
 };
 
