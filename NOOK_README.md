@@ -1,3 +1,8 @@
+The build, flash and boot-test loop is automated by `tools/nook` in the
+[nook-linux-artifacts](https://github.com/MsKrypt1/nook-linux-artifacts) repo
+(`tools/README.md` there): `tools/nook build`, `tools/nook deploy`, then
+`tools/nook run CMD` over the USB link. The steps below are the manual path.
+
 # Building
 The default `.config` for Nook tablet can be found in `arch/arm/configs/omap_bn_ovation_defconfig`.
 
@@ -14,10 +19,11 @@ make -j5 ARCH=arm menuconfig
 For enabling dynamic debug on startup, add to bootargs (example):
 `dyndbg=\"file edt-ft5x06.c +p; module omapdrm +p; file regmap-i2c.c +p; file i2c-core-base.c +p\"`
 
-The full bootargs would look like:
-`bootargs = "console=ttyS0,115200n8 earlyprintk root=/dev/ram0 rw init=/init ignore_loglevel initrd=0x82000000,0x0060B25D dyndbg=\"file edt-ft5x06.c +p; module omapdrm +p; file regmap-i2c.c +p; file i2c-core-base.c +p\"";`
+The bootargs are set in the DTS (`chosen/bootargs`), for example:
+`bootargs = "console=ttyS0,115200n8 earlyprintk root=/dev/ram0 rw init=/init omap_wdt.early_enable=1 log_buf_len=1M initrd=0x82000000,<size> dyndbg=\"file edt-ft5x06.c +p\"";`
 
-The bootargs currently can be set in DTS directly.
+`tools/nook build` writes the right `initrd=` size (and `panic=10`) into a copy
+of the dtb; only the manual path needs the DTS value to match.
 
 # Packaging
 
@@ -28,19 +34,17 @@ To prepare a ramdisk create a folder with usual root struture (/bin, /sys, etc.)
 ```bash
 # ramdisk is the root folder (i.e. "/" in the target fs)
 cd ramdisk
-find . | cpio --quiet -H newc -o | gzip -9 -n > ../ramdisk.img
+find . | cpio --quiet -H newc -o | xz --check=crc32 --lzma2=preset=9e,dict=8MiB > ../ramdisk.img
+stat -c %s ../ramdisk.img
 ```
 
-Afterwards pack and gzip the contents with:
-```bash
-stat -c %s ramdisk.img 
-# Example output is: 6323720
-```
+`tools/nook build` (or `./build-ramdisk.fish`) does this from a copy of the
+artifacts repo's `ramdisk/` with every ELF file stripped. The kernel allocates
+the 8 MiB xz dictionary to unpack it.
 
+The size of the ramdisk has to be set in the initrd argument after the address: `initrd=0x82000000,<size_in_bytes>`.
 
-The size of the gzip of the ramdisk has to be set in the initrd argument after the address: `initrd=0x82000000,<size_in_bytes>`.
-
-The current bootarg (`root=/dev/ram0 rw init=/init initrd=0x82000000,6323720`) from dts starts with `/init` file. Example file:
+The bootargs (`root=/dev/ram0 rw init=/init initrd=0x82000000,<size>`) start the `/init` file. A minimal example (the real one is `ramdisk/init` in the artifacts repo):
 ```bash
 #!/bin/sh
 
@@ -158,12 +162,16 @@ rm zImage-dtb linux-base.img
 This appends dtb to the image, creates a boot image with a ramdisk and prepends a u-boot header extracted from the android kernel image.
 
 # Flashing
-Open TWRP recovery menu by holding both the power button and home (nook) button (the bottom middle one on the front). After few seconds (around when the nook logo is displayed) the buttons can be released.
+`tools/nook deploy` flashes the boot partition from a running mainline system
+(over the USB link, else Wi-Fi) or from TWRP (adb), and watches the boot.
+
+By hand: open TWRP recovery menu by holding both the power button and home (nook) button (the bottom middle one on the front). After few seconds (around when the nook logo is displayed) the buttons can be released.
 
 Afterwards copy the complete `linux-boot.img` image to the sd card and flash to **boot** (NOT recovery).
 
 # Logs
-Currently, to watch the boot up and logs, UART connection should be used. Connect with screen:
-```bash
-screen /dev/ttyACM1 115200
-```
+The kernel console is the UART at 115200 8n1. `tools/nook log` and
+`tools/nook wait` read it through the tool's console daemon, which owns the
+serial port: stop it with `tools/nook daemon stop` before opening the port with
+`screen` or another terminal. Once booted, the tablet's own USB gadget offers a
+shell on its ACM port and telnet at 192.168.7.2 (NCM).
