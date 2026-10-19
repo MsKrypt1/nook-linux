@@ -4,6 +4,7 @@
  */
 /dts-v1/;
 
+#include <dt-bindings/input/gpio-keys.h>
 #include <dt-bindings/input/input.h>
 #include "omap4470.dtsi"
 #include "omap4-mcpdm.dtsi"
@@ -171,6 +172,40 @@
 			"Headset Mic", "Headset Mic Bias";
 	};
 
+	/*
+	 * Home (gpmc_ad8.gpio_32, external pull-up) and the hall sensor for
+	 * the cover (fref_clk3_out.gpio_wk31, push-pull), both active low
+	 * (vendor board-ovation-buttons.c; u-boot reads Home low when
+	 * pressed). The cover wakes the tablet only when it is opened.
+	 *
+	 * GPIO2 loses its logic in suspend (L4PER OSWR), so Home wakes the
+	 * tablet through its pad's IO wakeup instead, as the vendor kernel
+	 * did. GPIO1 is in the always-on WKUP domain.
+	 */
+	gpio-keys {
+		compatible = "gpio-keys";
+		pinctrl-names = "default";
+		pinctrl-0 = <&gpio_keys_pins>, <&hall_pins>;
+
+		key-home {
+			label = "Home";
+			gpios = <&gpio2 0 GPIO_ACTIVE_LOW>;
+			interrupts-extended = <&omap4_pmx_core 0x10>;
+			interrupt-names = "wakeup";
+			linux,code = <KEY_HOME>;
+			wakeup-source;
+		};
+
+		switch-lid {
+			label = "Hall";
+			gpios = <&gpio1 31 GPIO_ACTIVE_LOW>;
+			linux,input-type = <EV_SW>;
+			linux,code = <SW_LID>;
+			wakeup-source;
+			wakeup-event-action = <EV_ACT_DEASSERTED>;
+		};
+	};
+
 	/* TWL6032 PMIC I2C Pullup Configuration */
 	i2c3_pullup: i2c3-pullup {
 		compatible = "ti,omap4-i2c-pullup";
@@ -331,6 +366,11 @@
 	twl6030_wkup_pins: twl6030-wkup-pins {
 		pinctrl-single,pins = <0x14 0x02>;
 	};
+
+	/* Hall sensor (fref_clk3_out.gpio_wk31), input without pull */
+	hall_pins: hall-pins {
+		pinctrl-single,pins = <0x18 0x103>;
+	};
 };
 
 &omap4_pmx_core {
@@ -413,6 +453,20 @@
 		pinctrl-single,pins = <0xba 0x03 0x160 0x118>;
 	};
 
+	/*
+	 * Volume keys on the keypad controller: kpd_row0 (Vol+) and kpd_row1
+	 * (Vol-) inputs with pull-up, kpd_col0 output; u-boot leaves them in
+	 * safe mode.
+	 */
+	keypad_pins: keypad-pins {
+		pinctrl-single,pins = <0x14e 0x118 0x150 0x118 0x142 0x00>;
+	};
+
+	/* Home key (gpmc_ad8.gpio_32), input without pull */
+	gpio_keys_pins: gpio-keys-pins {
+		pinctrl-single,pins = <0x10 0x103>;
+	};
+
 	/* Accelerometer (KXTF9) */
 	kxtf9_pins: kxtf9-pins {
 		pinctrl-single,pins = <0x116 0x103>;
@@ -474,6 +528,16 @@
 	twl6030_pins: twl6030-pins {
 		pinctrl-single,pins = <0x15e 0x4118>;
 	};
+};
+
+/* Vol+ and Vol- (vendor board-ovation-buttons.c: 2 rows, 1 column) */
+&keypad {
+	pinctrl-names = "default";
+	pinctrl-0 = <&keypad_pins>;
+	keypad,num-rows = <2>;
+	keypad,num-columns = <1>;
+	linux,keymap = <MATRIX_KEY(0, 0, KEY_VOLUMEUP)
+			MATRIX_KEY(1, 0, KEY_VOLUMEDOWN)>;
 };
 
 /* I2C1 - Additional Sensors */
