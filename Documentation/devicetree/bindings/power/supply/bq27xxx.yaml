@@ -67,6 +67,22 @@ properties:
        - voltage-min-design-microvolt
        Both or neither of the *-full-design-*-hours properties must be set.
 
+  interrupts:
+    minItems: 1
+    items:
+      - description: state-of-charge interrupt (SOC_INT or GPOUT); the
+          readings are updated on every one
+      - description: a separate wake-up interrupt, e.g. BAT_LOW
+          through a pad's wake-up logic
+
+  interrupt-names:
+    minItems: 1
+    items:
+      - const: irq
+      - const: wakeup
+
+  wakeup-source: true
+
   power-supplies: true
 
 allOf:
