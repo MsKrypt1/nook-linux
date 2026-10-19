@@ -11,6 +11,8 @@
 #include <linux/delay.h>
 #include <linux/pm.h>
 #include <linux/platform_device.h>
+#include <linux/property.h>
+#include <linux/regulator/consumer.h>
 #include <linux/slab.h>
 #include <linux/mfd/twl6040.h>
 
@@ -58,6 +60,7 @@ struct twl6040_data {
 	int hs_power_mode_locked;
 	bool dl1_unmuted;
 	bool dl2_unmuted;
+	bool vddhf;
 	u8 dl12_cache[TWL6040_REG_HFRCTL - TWL6040_REG_HSLCTL + 1];
 	unsigned int clk_in;
 	unsigned int sysclk;
@@ -815,6 +818,16 @@ static const struct snd_soc_dapm_route intercon[] = {
 	{"VIBRAR", NULL, "Vibra Right Driver"},
 };
 
+/* Boards that switch VDDHF, the handsfree drivers' supply */
+static const struct snd_soc_dapm_widget twl6040_vddhf_widgets[] = {
+	SND_SOC_DAPM_REGULATOR_SUPPLY("vddhf", 0, 0),
+};
+
+static const struct snd_soc_dapm_route twl6040_vddhf_routes[] = {
+	{"HF Left Driver", NULL, "vddhf"},
+	{"HF Right Driver", NULL, "vddhf"},
+};
+
 static int twl6040_set_bias_level(struct snd_soc_component *component,
 				enum snd_soc_bias_level level)
 {
@@ -841,8 +854,9 @@ static int twl6040_set_bias_level(struct snd_soc_component *component,
 
 		priv->codec_powered = 1;
 
-		/* Set external boost GPO */
-		twl6040_write(component, TWL6040_REG_GPOCTL, 0x02);
+		/* Set external boost GPO, unless VDDHF is a regulator */
+		if (!priv->vddhf)
+			twl6040_write(component, TWL6040_REG_GPOCTL, 0x02);
 		break;
 	case SND_SOC_BIAS_OFF:
 		if (!priv->codec_powered)
@@ -1096,6 +1110,7 @@ static struct snd_soc_dai_driver twl6040_dai[] = {
 
 static int twl6040_probe(struct snd_soc_component *component)
 {
+	struct snd_soc_dapm_context *dapm = snd_soc_component_get_dapm(component);
 	struct twl6040_data *priv;
 	struct platform_device *pdev = to_platform_device(component->dev);
 	int ret = 0;
@@ -1107,6 +1122,23 @@ static int twl6040_probe(struct snd_soc_component *component)
 	snd_soc_component_set_drvdata(component, priv);
 
 	priv->component = component;
+
+	/*
+	 * A board that switches VDDHF (for example with the codec's own GPO1)
+	 * describes it as a regulator; it is on only while a handsfree
+	 * driver is.
+	 */
+	if (device_property_present(component->dev->parent, "vddhf-supply")) {
+		priv->vddhf = true;
+		ret = snd_soc_dapm_new_controls(dapm, twl6040_vddhf_widgets,
+						ARRAY_SIZE(twl6040_vddhf_widgets));
+		if (ret)
+			return ret;
+		ret = snd_soc_dapm_add_routes(dapm, twl6040_vddhf_routes,
+					      ARRAY_SIZE(twl6040_vddhf_routes));
+		if (ret)
+			return ret;
+	}
 
 	priv->plug_irq = platform_get_irq(pdev, 0);
 	if (priv->plug_irq < 0)
@@ -1157,6 +1189,14 @@ static const struct snd_soc_component_driver soc_component_dev_twl6040 = {
 
 static int twl6040_codec_probe(struct platform_device *pdev)
 {
+	int ret;
+
+	/* VDDHF is described in the twl6040 node */
+	ret = devm_regulator_register_supply_alias(&pdev->dev, "vddhf",
+						   pdev->dev.parent, "vddhf");
+	if (ret)
+		return ret;
+
 	return devm_snd_soc_register_component(&pdev->dev,
 				      &soc_component_dev_twl6040,
 				      twl6040_dai, ARRAY_SIZE(twl6040_dai));

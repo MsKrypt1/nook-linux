@@ -10,7 +10,7 @@ Required properties:
 - reg: must be 0x4b for i2c address
 - interrupts: twl6040 has one interrupt line connecteded to the main SoC
 - gpio-controller:
-- #gpio-cells = <1>: twl6040 provides GPO lines.
+- #gpio-cells = <2>: twl6040 provides GPO lines (line number and flags).
 - #clock-cells = <0>; twl6040 is a provider of pdmclk which is used by McPDM
 - twl6040,audpwron-gpio: Power on GPIO line for the twl6040
 
@@ -21,6 +21,9 @@ Optional properties, nodes:
 - enable-active-high: To power on the twl6040 during boot.
 - clocks: phandle to the clk32k and/or to mclk clock provider
 - clock-names: Must be "clk32k" for the 32K clock and "mclk" for the MCLK.
+- vddhf-supply: Regulator for VDDHF, the handsfree drivers' supply, if the
+  board switches it (for example with the twl6041's GPO1). It is enabled
+  only while a handsfree driver is on, and the codec then leaves GPO2 alone.
 
 Vibra functionality
 Required properties:
