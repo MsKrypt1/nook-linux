@@ -198,6 +198,26 @@ properties:
       interrupts:
         maxItems: 1
 
+  mmc-cd:
+    type: object
+    additionalProperties: false
+    description:
+      The TWL6030/TWL6032 SD card detect (MMC1) as a GPIO with one input
+      line, the card state, and the MMC interrupt as its interrupt.
+    properties:
+      compatible:
+        const: ti,twl6030-mmc-cd
+      interrupts:
+        maxItems: 1
+      gpio-controller: true
+      "#gpio-cells":
+        const: 2
+    required:
+      - compatible
+      - interrupts
+      - gpio-controller
+      - "#gpio-cells"
+
 patternProperties:
   "^regulator-":
     type: object
