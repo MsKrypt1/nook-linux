@@ -1496,6 +1496,15 @@ static int pcs_irq_handle(struct pcs_soc_data *pcs_soc)
 		}
 	}
 
+	/*
+	 * A wake-up latched for a pad with no interrupt here, one whose mux
+	 * value enables the wake-up statically, stays latched until the next
+	 * rearm.  On omap4 a latched wake-up keeps CORE out of its low power
+	 * state in the next suspend, so rearm to clear it.
+	 */
+	if (!count && pcs_soc->rearm)
+		pcs_soc->rearm();
+
 	return count;
 }
 
