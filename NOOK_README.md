@@ -19,11 +19,18 @@ make -j5 ARCH=arm menuconfig
 For enabling dynamic debug on startup, add to bootargs (example):
 `dyndbg=\"file edt-ft5x06.c +p; module omapdrm +p; file regmap-i2c.c +p; file i2c-core-base.c +p\"`
 
-The bootargs are set in the DTS (`chosen/bootargs`), for example:
-`bootargs = "console=ttyS0,115200n8 earlyprintk root=/dev/ram0 rw init=/init omap_wdt.early_enable=1 log_buf_len=1M initrd=0x82000000,<size> dyndbg=\"file edt-ft5x06.c +p\"";`
+The board's bootargs are set in the DTS (`chosen/bootargs`), for example:
+`bootargs = "console=ttyS0,115200n8 earlyprintk log_buf_len=1M dyndbg=\"file edt-ft5x06.c +p\"";`
 
-`tools/nook build` writes the right `initrd=` size (and `panic=10`) into a copy
-of the dtb; only the manual path needs the DTS value to match.
+The kernel command line is these bootargs, then the boot.img header cmdline
+(`mkbootimg --cmdline`), then u-boot's `androidboot.*` and `boot.fb=`.
+
+The test ramdisk's arguments (`root=/dev/ram0 rw init=/init
+omap_wdt.early_enable=1 panic=10`) go into the header cmdline (`tools/nook build`,
+`make-img.fish`), so the DTS stays usable for postmarketOS. No
+`initrd=`: the second-stage u-boot in `boot_header.img` passes the ramdisk's
+location and size as `ATAG_INITRD2`, and the decompressor
+(`ARM_ATAG_DTB_COMPAT`) turns it into `/chosen/linux,initrd-start/end`.
 
 # Packaging
 
@@ -35,16 +42,13 @@ To prepare a ramdisk create a folder with usual root struture (/bin, /sys, etc.)
 # ramdisk is the root folder (i.e. "/" in the target fs)
 cd ramdisk
 find . | cpio --quiet -H newc -o | xz --check=crc32 --lzma2=preset=9e,dict=8MiB > ../ramdisk.img
-stat -c %s ../ramdisk.img
 ```
 
 `tools/nook build` (or `./build-ramdisk.fish`) does this from a copy of the
 artifacts repo's `ramdisk/` with every ELF file stripped. The kernel allocates
 the 8 MiB xz dictionary to unpack it.
 
-The size of the ramdisk has to be set in the initrd argument after the address: `initrd=0x82000000,<size_in_bytes>`.
-
-The bootargs (`root=/dev/ram0 rw init=/init initrd=0x82000000,<size>`) start the `/init` file. A minimal example (the real one is `ramdisk/init` in the artifacts repo):
+The header cmdline (`root=/dev/ram0 rw init=/init`) starts the `/init` file. A minimal example (the real one is `ramdisk/init` in the artifacts repo):
 ```bash
 #!/bin/sh
 
