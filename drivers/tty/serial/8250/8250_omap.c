@@ -145,6 +145,7 @@ struct omap8250_priv {
 	spinlock_t rx_dma_lock;
 	bool rx_dma_broken;
 	bool throttled;
+	bool mctrl_pending;
 };
 
 struct omap8250_dma_params {
@@ -199,11 +200,26 @@ static void __omap8250_set_mctrl(struct uart_port *port, unsigned int mctrl)
 
 static void omap8250_set_mctrl(struct uart_port *port, unsigned int mctrl)
 {
-	int err;
+	struct omap8250_priv *priv = port->private_data;
+	int ret;
 
-	err = pm_runtime_resume_and_get(port->dev);
-	if (err)
+	/*
+	 * uart_update_mctrl() calls this with the port lock held, where a
+	 * runtime resume can't sleep. A port that is not active, e.g. a
+	 * serdev port opened again after it autosuspended, gets
+	 * port->mctrl in its runtime resume instead.
+	 */
+	ret = pm_runtime_get_if_active(port->dev);
+	if (ret < 0 && pm_runtime_active(port->dev)) {
+		/* runtime PM disabled, e.g. in system suspend */
+		__omap8250_set_mctrl(port, mctrl);
 		return;
+	}
+	if (ret <= 0) {
+		priv->mctrl_pending = true;
+		pm_request_resume(port->dev);
+		return;
+	}
 
 	__omap8250_set_mctrl(port, mctrl);
 
@@ -1786,12 +1802,22 @@ static int omap8250_runtime_resume(struct device *dev)
 	struct omap8250_priv *priv = dev_get_drvdata(dev);
 	struct uart_8250_port *up = NULL;
 
+	if (priv->line >= 0)
+		up = serial8250_get_port(priv->line);
+
+	/* A modem control change while not active, see omap8250_set_mctrl() */
+	if (up) {
+		uart_port_lock_irq(&up->port);
+		if (priv->mctrl_pending) {
+			priv->mctrl_pending = false;
+			__omap8250_set_mctrl(&up->port, up->port.mctrl);
+		}
+		uart_port_unlock_irq(&up->port);
+	}
+
 	/* Did the hardware wake to a device IO interrupt before a wakeirq? */
 	if (atomic_read(&priv->active))
 		return 0;
-
-	if (priv->line >= 0)
-		up = serial8250_get_port(priv->line);
 
 	if (up && omap8250_lost_context(up)) {
 		uart_port_lock_irq(&up->port);
