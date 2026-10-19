@@ -112,7 +112,8 @@ static void omap_dmic_dai_shutdown(struct snd_pcm_substream *substream,
 
 	mutex_lock(&dmic->mutex);
 
-	cpu_latency_qos_remove_request(&dmic->pm_qos_req);
+	if (cpu_latency_qos_request_active(&dmic->pm_qos_req))
+		cpu_latency_qos_remove_request(&dmic->pm_qos_req);
 
 	if (!snd_soc_dai_active(dai))
 		dmic->active = 0;
@@ -233,6 +234,8 @@ static int omap_dmic_dai_prepare(struct snd_pcm_substream *substream,
 	if (cpu_latency_qos_request_active(&dmic->pm_qos_req))
 		cpu_latency_qos_update_request(&dmic->pm_qos_req,
 					       dmic->latency);
+	else
+		cpu_latency_qos_add_request(&dmic->pm_qos_req, dmic->latency);
 
 	/* Configure uplink threshold */
 	omap_dmic_write(dmic, OMAP_DMIC_FIFO_CTRL_REG, dmic->threshold);
