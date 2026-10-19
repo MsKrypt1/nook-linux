@@ -412,7 +412,23 @@ static irqreturn_t gpio_keys_gpio_isr(int irq, void *dev_id)
 {
 	struct gpio_button_data *bdata = dev_id;
 
-	BUG_ON(irq != bdata->irq);
+	BUG_ON(irq != bdata->irq && irq != bdata->wakeirq);
+
+	/*
+	 * The dedicated wakeirq is only enabled during system suspend, and
+	 * it may fire before the gpio controller has resumed. Don't read
+	 * the gpio then: gpio_keys_resume() reports the button state.
+	 */
+	if (irq == bdata->wakeirq) {
+		const struct gpio_keys_button *button = bdata->button;
+
+		pm_wakeup_event(bdata->input->dev.parent, 0);
+		if (bdata->suspended &&
+		    (button->type == 0 || button->type == EV_KEY))
+			input_report_key(bdata->input, button->code, 1);
+
+		return IRQ_HANDLED;
+	}
 
 	if (bdata->button->wakeup) {
 		const struct gpio_keys_button *button = bdata->button;
