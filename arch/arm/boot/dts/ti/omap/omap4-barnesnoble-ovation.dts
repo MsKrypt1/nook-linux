@@ -467,6 +467,15 @@
 		pinctrl-single,pins = <0x10 0x103>;
 	};
 
+	/*
+	 * Fuel gauge SOC_INT (kpd_row4.gpio_176) and BAT_LOW
+	 * (gpmc_a18.gpio_42), both active low; BAT_LOW keeps u-boot's
+	 * pull-up.
+	 */
+	bq27520_pins: bq27520-pins {
+		pinctrl-single,pins = <0x14a 0x103 0x24 0x11b>;
+	};
+
 	/* Accelerometer (KXTF9) */
 	kxtf9_pins: kxtf9-pins {
 		pinctrl-single,pins = <0x116 0x103>;
@@ -607,6 +616,19 @@
 		status = "okay";
 		compatible = "ti,bq27520g3";
 		reg = <0x55>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&bq27520_pins>;
+		/*
+		 * SOC_INT pulses on a change of the state of charge, the
+		 * driver then reads the gauge. BAT_LOW wakes the tablet when
+		 * the battery runs low ("to inform the framework to
+		 * shutdown", vendor board-ovation.c); GPIO2 loses its logic
+		 * in suspend, so through its pad's IO wakeup.
+		 */
+		interrupts-extended = <&gpio6 16 IRQ_TYPE_EDGE_FALLING>,
+				      <&omap4_pmx_core 0x24>;
+		interrupt-names = "irq", "wakeup";
+		wakeup-source;
 		/* VBAT for the charger's boost-back fix */
 		power-supplies = <&charger>;
 	};
