@@ -626,9 +626,11 @@
 		pinctrl-names = "default";
 		pinctrl-0 = <&bq27520_pins>;
 		/*
-		 * SOC_INT pulses on a change of the state of charge, the
-		 * driver then reads the gauge. BAT_LOW wakes the tablet when
-		 * the battery runs low ("to inform the framework to
+		 * The driver reads the gauge on each SOC_INT pulse. B&N's
+		 * data flash has SOC Delta 0, so it pulses only near empty
+		 * (SOC1: below 60 mAh remaining, above 100 mAh; SYSDOWN:
+		 * 2.5 V, 2.8 V), not per 1 %. BAT_LOW (SOC1) wakes the tablet
+		 * when the battery runs low ("to inform the framework to
 		 * shutdown", vendor board-ovation.c); GPIO2 loses its logic
 		 * in suspend, so through its pad's IO wakeup.
 		 */
