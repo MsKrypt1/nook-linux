@@ -47,6 +47,13 @@ properties:
       when power is connected and the battery is below minimum system voltage,
       the system will be regulated above this setting.
 
+  ti,cold-charge-current-microamp:
+    description: |
+      Fast-charge current while the battery is cold: below 16 °C, until it is
+      back at 18 °C. The battery temperature comes from the gauge of the
+      battery that lists this charger in power-supplies. Without the property
+      the current does not depend on the temperature.
+
   psel-gpios:
     maxItems: 1
     description: |

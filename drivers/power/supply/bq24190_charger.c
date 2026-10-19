@@ -240,6 +240,16 @@ enum bq24190_chip {
 #define BQ24190_BOOSTBACK_SYS_MIN_HI	3500
 
 /*
+ * Cold charging, also from B&N's vendor driver: with the battery below
+ * 16 °C the fast-charge current drops to "ti,cold-charge-current-microamp",
+ * from 18 °C on it is back to the configured one (the reset default if none).
+ * The battery temperature comes from the gauge, in 0.1 °C.
+ */
+#define BQ24190_COLD_TEMP		160
+#define BQ24190_COLD_TEMP_WARM		180
+#define BQ24190_ICHG_DEFAULT		2048000
+
+/*
  * The FAULT register is latched by the bq24190 (except for NTC_FAULT)
  * so the first read after a fault returns the latched value and subsequent
  * reads return the current value.  In order to return the fault status
@@ -262,6 +272,7 @@ struct bq24190_dev_info {
 	bool				boostback;
 	bool				iinlim_quirk;
 	bool				psel_adapter;
+	bool				cold;
 	struct gpio_desc		*psel;
 	int				vbat;
 	int				charge_type;
@@ -272,6 +283,7 @@ struct bq24190_dev_info {
 	u32				ichg_max;
 	u32				vreg;
 	u32				vreg_max;
+	u32				cold_ichg;
 	struct mutex			f_reg_lock;
 	struct mutex			rmw_lock;
 	u8				f_reg;
@@ -797,43 +809,102 @@ static int bq24190_register_vbus_regulator(struct bq24190_dev_info *bdi)
 }
 #endif
 
-struct bq24190_vbat {
-	const char	*charger;
-	int		uv;
+struct bq24190_battery_prop {
+	const char			*charger;
+	enum power_supply_property	psp;
+	union power_supply_propval	val;
 };
 
-static int bq24190_vbat_cb(struct power_supply *psy, void *data)
+static int bq24190_battery_prop_cb(struct power_supply *psy, void *data)
 {
-	struct bq24190_vbat *vb = data;
-	union power_supply_propval val;
+	struct bq24190_battery_prop *bp = data;
 	int i;
 
 	if (psy->desc->type != POWER_SUPPLY_TYPE_BATTERY)
 		return 0;
 
 	for (i = 0; i < psy->num_supplies; i++) {
-		if (!strcmp(psy->supplied_from[i], vb->charger))
+		if (!strcmp(psy->supplied_from[i], bp->charger))
 			break;
 	}
 	if (i == psy->num_supplies)
 		return 0;
 
-	if (power_supply_get_property(psy, POWER_SUPPLY_PROP_VOLTAGE_NOW, &val))
+	if (power_supply_get_property(psy, bp->psp, &bp->val))
 		return 0;
 
-	vb->uv = val.intval;
 	return 1;
 }
 
-/* VBAT in uV from a battery that lists the charger in "power-supplies" */
-static int bq24190_get_vbat(struct bq24190_dev_info *bdi)
+/* A property of the battery that lists the charger in "power-supplies" */
+static int bq24190_get_battery_prop(struct bq24190_dev_info *bdi,
+				    enum power_supply_property psp, int *val)
 {
-	struct bq24190_vbat vb = { .charger = bdi->charger->desc->name };
+	struct bq24190_battery_prop bp = {
+		.charger = bdi->charger->desc->name,
+		.psp = psp,
+	};
 
-	if (power_supply_for_each_psy(&vb, bq24190_vbat_cb) <= 0)
+	if (power_supply_for_each_psy(&bp, bq24190_battery_prop_cb) <= 0)
 		return -ENODEV;
 
-	return vb.uv;
+	*val = bp.val.intval;
+	return 0;
+}
+
+/* VBAT in uV */
+static int bq24190_get_vbat(struct bq24190_dev_info *bdi)
+{
+	int ret, uv;
+
+	ret = bq24190_get_battery_prop(bdi, POWER_SUPPLY_PROP_VOLTAGE_NOW, &uv);
+
+	return ret < 0 ? ret : uv;
+}
+
+static int bq24190_set_ichg(struct bq24190_dev_info *bdi, u32 ichg)
+{
+	return bq24190_set_field_val(bdi, BQ24190_REG_CCC,
+				     BQ24190_REG_CCC_ICHG_MASK,
+				     BQ24190_REG_CCC_ICHG_SHIFT,
+				     bq24190_ccc_ichg_values,
+				     bdi->info->ichg_array_size, ichg);
+}
+
+/* The configured fast-charge current, the cold one if lower and cold */
+static u32 bq24190_ichg(struct bq24190_dev_info *bdi)
+{
+	u32 ichg = bdi->ichg ?: BQ24190_ICHG_DEFAULT;
+
+	return bdi->cold ? min(ichg, bdi->cold_ichg) : ichg;
+}
+
+/*
+ * Apply the fast-charge current, with cold charging for the battery
+ * temperature.  Without a temperature reading the last state stays.
+ */
+static int bq24190_update_ichg(struct bq24190_dev_info *bdi)
+{
+	bool cold = bdi->cold;
+	int temp;
+
+	if (!bdi->cold_ichg)
+		return bdi->ichg ? bq24190_set_ichg(bdi, bdi->ichg) : 0;
+
+	if (!bq24190_get_battery_prop(bdi, POWER_SUPPLY_PROP_TEMP, &temp)) {
+		if (temp < BQ24190_COLD_TEMP)
+			cold = true;
+		else if (temp >= BQ24190_COLD_TEMP_WARM)
+			cold = false;
+
+		if (cold != bdi->cold)
+			dev_dbg(bdi->dev, "battery at %d.%d C: cold charging %s\n",
+				temp / 10, abs(temp % 10), cold ? "on" : "off");
+	}
+
+	bdi->cold = cold;
+
+	return bq24190_set_ichg(bdi, bq24190_ichg(bdi));
 }
 
 static int bq24190_set_sys_min(struct bq24190_dev_info *bdi, u16 sys_min)
@@ -926,8 +997,12 @@ static void bq24190_wdt_work(struct work_struct *work)
 		error = bq24190_wdt_kick(bdi);
 		if (error < 0)
 			dev_warn(bdi->dev, "Can't kick watchdog: %d\n", error);
-		else if (bdi->boostback)
-			bq24190_update_sys_min(bdi);
+		else {
+			if (bdi->boostback)
+				bq24190_update_sys_min(bdi);
+			if (bdi->cold_ichg)
+				bq24190_update_ichg(bdi);
+		}
 
 		pm_runtime_mark_last_busy(bdi->dev);
 		pm_runtime_put_autosuspend(bdi->dev);
@@ -978,16 +1053,9 @@ static int bq24190_set_config(struct bq24190_dev_info *bdi)
 			return ret;
 	}
 
-	if (bdi->ichg) {
-		ret = bq24190_set_field_val(bdi, BQ24190_REG_CCC,
-					    BQ24190_REG_CCC_ICHG_MASK,
-					    BQ24190_REG_CCC_ICHG_SHIFT,
-					    bq24190_ccc_ichg_values,
-					    bdi->info->ichg_array_size,
-					    bdi->ichg);
-		if (ret < 0)
-			return ret;
-	}
+	ret = bq24190_update_ichg(bdi);
+	if (ret < 0)
+		return ret;
 
 	if (bdi->vreg) {
 		ret = bq24190_set_field_val(bdi, BQ24190_REG_CVC,
@@ -2218,7 +2286,7 @@ static int bq24190_hw_init(struct bq24190_dev_info *bdi)
 
 static int bq24190_get_config(struct bq24190_dev_info *bdi)
 {
-	const char * const s = "ti,system-minimum-microvolt";
+	const char *s = "ti,system-minimum-microvolt";
 	struct power_supply_battery_info *info;
 	int v, idx;
 
@@ -2265,6 +2333,14 @@ static int bq24190_get_config(struct bq24190_dev_info *bdi)
 			bdi->vreg = bdi->vreg_max = v;
 
 		power_supply_put_battery_info(bdi->charger, info);
+	}
+
+	s = "ti,cold-charge-current-microamp";
+	if (device_property_read_u32(bdi->dev, s, &v) == 0) {
+		if (v >= bq24190_ccc_ichg_values[0] && v <= bdi->ichg_max)
+			bdi->cold_ichg = v;
+		else
+			dev_warn(bdi->dev, "invalid value for %s: %u\n", s, v);
 	}
 
 	return 0;
@@ -2566,38 +2642,39 @@ static __maybe_unused int bq24190_runtime_resume(struct device *dev)
 
 /*
  * Default mode means SYS_MIN 3.5 V, which the boost-back fix avoids for
- * VBAT in 3.4-3.65 V.  In that band, with a supply in, stay in host mode
- * through the sleep instead: WDT off, SYS_MIN 3.2 V.  Plugging or
- * unplugging wakes the host, which then decides again.
+ * VBAT in 3.4-3.65 V, and the full 2048 mA fast-charge current, which cold
+ * charging avoids.  In either case, with a supply in, stay in host mode
+ * through the sleep instead: WDT off, SYS_MIN 3.2 V in the band, the cold
+ * current when cold.  Plugging or unplugging wakes the host, which then
+ * decides again.
  *
- * VBAT is the last one read while awake, at most a minute old.  Reading
- * the gauge here can refresh its cache, and the uevent work that queues
- * then runs after the I2C bus has suspended.
+ * VBAT and the cold state are the last ones read while awake, at most a
+ * minute old.  Reading the gauge here can refresh its cache, and the
+ * uevent work that queues then runs after the I2C bus has suspended.
  */
-static void bq24190_boostback_suspend(struct bq24190_dev_info *bdi)
+static void bq24190_host_mode_suspend(struct bq24190_dev_info *bdi)
 {
-	int vbat = bdi->vbat;
+	bool band = bdi->boostback && bdi->vbat > BQ24190_BOOSTBACK_VBAT_UV &&
+		    bdi->vbat <= BQ24190_BOOSTBACK_VBAT_MAX_UV;
+	bool cold = bdi->cold;
 	u8 ss;
 
-	if (!bdi->boostback)
+	if (!band && !cold)
 		return;
 
 	if (bq24190_read(bdi, BQ24190_REG_SS, &ss) < 0 ||
 	    !(ss & BQ24190_REG_SS_PG_STAT_MASK))
 		return;
 
-	if (vbat <= BQ24190_BOOSTBACK_VBAT_UV ||
-	    vbat > BQ24190_BOOSTBACK_VBAT_MAX_UV)
-		return;
-
 	if (bq24190_wdt_set(bdi, 0) < 0 ||
-	    bq24190_set_sys_min(bdi, BQ24190_BOOSTBACK_SYS_MIN_LO) < 0) {
-		dev_warn(bdi->dev, "Can't set up boost-back fix for suspend\n");
+	    (band && bq24190_set_sys_min(bdi, BQ24190_BOOSTBACK_SYS_MIN_LO) < 0) ||
+	    (cold && bq24190_set_ichg(bdi, bq24190_ichg(bdi)) < 0)) {
+		dev_warn(bdi->dev, "Can't set up host mode for suspend\n");
 		return;
 	}
 
-	dev_dbg(bdi->dev, "VBAT %d mV: host mode through suspend\n",
-		vbat / 1000);
+	dev_dbg(bdi->dev, "VBAT %d mV%s: host mode through suspend\n",
+		bdi->vbat / 1000, cold ? ", cold" : "");
 }
 
 static __maybe_unused int bq24190_pm_suspend(struct device *dev)
@@ -2620,7 +2697,7 @@ static __maybe_unused int bq24190_pm_suspend(struct device *dev)
 	 * sleeping host; there is no direct way into it.
 	 */
 	bq24190_register_reset(bdi);
-	bq24190_boostback_suspend(bdi);
+	bq24190_host_mode_suspend(bdi);
 
 	if (error >= 0) {
 		pm_runtime_put_autosuspend(bdi->dev);
