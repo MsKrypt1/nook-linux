@@ -839,6 +839,20 @@
 };
 
 /*
+ * Nothing on HDQ: the fuel gauge (bq27520) is on I2C1. With omap_hdq loaded
+ * the bus reported a slave 01.000000000000 and bq27xxx_battery_hdq made a
+ * second battery of it.
+ */
+&hdqw1w {
+	status = "disabled";
+};
+
+/* No USB host port: the only USB is the OTG controller below. */
+&usbhshost {
+	status = "disabled";
+};
+
+/*
  * USB OTG on the 30-pin connector: the internal UTMI PHY, with VBUS and ID
  * sensed by the TWL6032 (twl6030-usb). Peripheral only for now. Host mode
  * needs VBUS from the bq24196 boost; twl6030-usb would instead turn on the
