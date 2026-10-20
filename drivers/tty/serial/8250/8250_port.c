@@ -1377,16 +1377,29 @@ static void autoconfig_irq(struct uart_8250_port *up)
 static void serial8250_stop_rx(struct uart_port *port)
 {
 	struct uart_8250_port *up = up_to_u8250p(port);
+	int ret = 0;
 
 	/* Port locked to synchronize UART_IER access against the console. */
 	lockdep_assert_held_once(&port->lock);
 
-	serial8250_rpm_get(up);
-
 	up->ier &= ~(UART_IER_RLSI | UART_IER_RDI);
+
+	/*
+	 * Callers hold the port lock, where a runtime resume can't sleep. A
+	 * port that is not active, e.g. an autosuspended serdev port being
+	 * closed, clears the bits in its runtime resume (8250_omap).
+	 */
+	if (up->capabilities & UART_CAP_RPM) {
+		ret = pm_runtime_get_if_active(port->dev);
+		/* ret < 0: runtime PM disabled, e.g. in system suspend */
+		if (ret == 0 || (ret < 0 && !pm_runtime_active(port->dev)))
+			return;
+	}
+
 	serial_port_out(port, UART_IER, up->ier);
 
-	serial8250_rpm_put(up);
+	if (ret > 0)
+		serial8250_rpm_put(up);
 }
 
 /**
