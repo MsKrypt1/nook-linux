@@ -37,6 +37,12 @@ struct pbias_reg_info {
 	int n_voltages;
 };
 
+struct pbias_regulator_data {
+	struct regmap *syscon;
+	struct regulator_desc *desc;
+	int count;
+};
+
 struct pbias_of_data {
 	unsigned int offset;
 };
@@ -155,6 +161,7 @@ static int pbias_regulator_probe(struct platform_device *pdev)
 	const struct pbias_reg_info *info;
 	int ret, count, idx;
 	const struct pbias_of_data *data;
+	struct pbias_regulator_data *drvdata;
 	unsigned int offset;
 
 	count = of_regulator_match(&pdev->dev, np, pbias_matches,
@@ -165,6 +172,11 @@ static int pbias_regulator_probe(struct platform_device *pdev)
 	desc = devm_kcalloc(&pdev->dev, count, sizeof(*desc), GFP_KERNEL);
 	if (!desc)
 		return -ENOMEM;
+
+	drvdata = devm_kzalloc(&pdev->dev, sizeof(*drvdata), GFP_KERNEL);
+	if (!drvdata)
+		return -ENOMEM;
+	drvdata->desc = desc;
 
 	syscon = syscon_regmap_lookup_by_phandle(np, "syscon");
 	if (IS_ERR(syscon))
@@ -185,6 +197,8 @@ static int pbias_regulator_probe(struct platform_device *pdev)
 
 	cfg.regmap = syscon;
 	cfg.dev = &pdev->dev;
+	drvdata->syscon = syscon;
+	platform_set_drvdata(pdev, drvdata);
 
 	for (idx = 0; idx < PBIAS_NUM_REGS && count; idx++) {
 		if (!pbias_matches[idx].init_data ||
@@ -221,13 +235,38 @@ static int pbias_regulator_probe(struct platform_device *pdev)
 		}
 		desc++;
 		count--;
+		drvdata->count++;
 	}
 
 	return 0;
 }
 
+/*
+ * A warm reset does not reset the control module, so a PBIAS cell that a
+ * consumer disabled on the way down (the MMC core powers an SD card off in
+ * its shutdown) stays in high-Z. Bootloaders that only set the enable bits
+ * then find the cell in VMODE error (B&N's u-boot on the Nook HD+: "ERROR:
+ * invalid voltage level on MMC1"). Leave it powered down but out of high-Z,
+ * as a cold reset does.
+ */
+static void pbias_regulator_shutdown(struct platform_device *pdev)
+{
+	struct pbias_regulator_data *drvdata = platform_get_drvdata(pdev);
+	int i;
+
+	if (!drvdata || system_state != SYSTEM_RESTART)
+		return;
+
+	for (i = 0; i < drvdata->count; i++)
+		if (drvdata->desc[i].disable_val)
+			regmap_update_bits(drvdata->syscon,
+					   drvdata->desc[i].enable_reg,
+					   drvdata->desc[i].disable_val, 0);
+}
+
 static struct platform_driver pbias_regulator_driver = {
 	.probe		= pbias_regulator_probe,
+	.shutdown	= pbias_regulator_shutdown,
 	.driver		= {
 		.name		= "pbias-regulator",
 		.probe_type	= PROBE_PREFER_ASYNCHRONOUS,
