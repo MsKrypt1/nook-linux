@@ -38,6 +38,7 @@ properties:
 
   backlight: true
   port: true
+  rotation: true
 
 required:
   - compatible
