@@ -1075,6 +1075,12 @@
 		cabc-enable-gpios = <&gpio1 27 GPIO_ACTIVE_HIGH>;
 		cm-enable-gpios = <&gpio5 17 GPIO_ACTIVE_HIGH>;
 		backlight = <&lcd_backlight>;
+		/*
+		 * The panel's 1920x1280 frame is landscape; the tablet is held
+		 * in portrait. 270: fbcon and compositors turn the image 90
+		 * degrees counter-clockwise.
+		 */
+		rotation = <270>;
 
 		port {
 			panel0_in: endpoint {

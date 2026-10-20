@@ -43,6 +43,7 @@ struct ltl090cl01 {
 	bool powered_off;
 	struct gpio_desc *cabc_gpio;
 	struct gpio_desc *cm_gpio;
+	enum drm_panel_orientation orientation;
 
 	/* the TCON registers are at their reset values (boot, power cut) */
 	bool tcon_reset;
@@ -265,12 +266,18 @@ static int ltl090cl01_get_modes(struct drm_panel *panel,
 	return 1;
 }
 
+static enum drm_panel_orientation ltl090cl01_get_orientation(struct drm_panel *panel)
+{
+	return to_ltl090cl01(panel)->orientation;
+}
+
 static const struct drm_panel_funcs ltl090cl01_funcs = {
 	.prepare = ltl090cl01_prepare,
 	.enable = ltl090cl01_enable,
 	.disable = ltl090cl01_disable,
 	.unprepare = ltl090cl01_unprepare,
 	.get_modes = ltl090cl01_get_modes,
+	.get_orientation = ltl090cl01_get_orientation,
 };
 
 static int ltl090cl01_probe(struct mipi_dsi_device *dsi)
@@ -312,6 +319,10 @@ static int ltl090cl01_probe(struct mipi_dsi_device *dsi)
 	if (IS_ERR(ctx->cm_gpio))
 		return dev_err_probe(dev, PTR_ERR(ctx->cm_gpio),
 				     "failed to get cm-enable GPIO\n");
+
+	ret = of_drm_get_panel_orientation(dev->of_node, &ctx->orientation);
+	if (ret)
+		return dev_err_probe(dev, ret, "failed to get orientation\n");
 
 	ret = drm_panel_of_backlight(&ctx->panel);
 	if (ret)
