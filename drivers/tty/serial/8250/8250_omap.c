@@ -1826,13 +1826,23 @@ static int omap8250_runtime_resume(struct device *dev)
 	if (priv->line >= 0)
 		up = serial8250_get_port(priv->line);
 
-	/* A modem control change while not active, see omap8250_set_mctrl() */
+	/*
+	 * Changes while not active: modem control, see omap8250_set_mctrl(),
+	 * and RX interrupts stopped, see serial8250_stop_rx(). A port that
+	 * lost its context gets IER from omap8250_restore_regs() below.
+	 */
 	if (up) {
+		u8 ier;
+
 		guard(uart_port_lock_irq)(&up->port);
 		if (priv->mctrl_pending) {
 			priv->mctrl_pending = false;
 			__omap8250_set_mctrl(&up->port, up->port.mctrl);
 		}
+		ier = serial_in(up, UART_IER);
+		if (ier & ~up->ier & (UART_IER_RLSI | UART_IER_RDI))
+			serial_out(up, UART_IER,
+				   ier & ~(UART_IER_RLSI | UART_IER_RDI));
 	}
 
 	/* Did the hardware wake to a device IO interrupt before a wakeirq? */
