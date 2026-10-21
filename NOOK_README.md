@@ -153,7 +153,7 @@ mkbootimg \
   --ramdisk ramdisk.img \
   --base 0x80000000 \
   --kernel_offset 0x00008000 \
-  --ramdisk_offset 0x02000000 \
+  --ramdisk_offset 0x04000000 \
   --tags_offset 0x00000100 \
   --pagesize 4096 \
   --output linux-base.img
