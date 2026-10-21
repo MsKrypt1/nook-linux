@@ -818,6 +818,32 @@
 	status = "disabled";
 };
 
+/*
+ * Nothing on MMC5 (sdmmc5_clk is gpio_145, CM_EN) or on any McSPI (the
+ * vendor board files register no SPI device; mcspi4_somi is gpio_153).
+ * Each of them held sDMA channels from probe: McSPI one pair per chip
+ * select, 14 of the 32 logical channels in all, and AES2 found none left.
+ */
+&mmc5 {
+	status = "disabled";
+};
+
+&mcspi1 {
+	status = "disabled";
+};
+
+&mcspi2 {
+	status = "disabled";
+};
+
+&mcspi3 {
+	status = "disabled";
+};
+
+&mcspi4 {
+	status = "disabled";
+};
+
 &i2c4 {
 	status = "disabled";
 };
