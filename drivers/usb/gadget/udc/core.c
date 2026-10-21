@@ -1234,6 +1234,14 @@ static inline int usb_gadget_udc_start_locked(struct usb_udc *udc)
 		return -EBUSY;
 	}
 
+	/*
+	 * A stopped UDC has its pull-up off, so connected can only be a
+	 * connect saved while it was stopped. Drop it: the callers connect
+	 * right after the start, and usb_gadget_connect_locked() would skip
+	 * the pull-up for a gadget that is already connected.
+	 */
+	udc->gadget->connected = false;
+
 	ret = udc->gadget->ops->udc_start(udc->gadget, udc->driver);
 	if (!ret)
 		udc->started = true;
