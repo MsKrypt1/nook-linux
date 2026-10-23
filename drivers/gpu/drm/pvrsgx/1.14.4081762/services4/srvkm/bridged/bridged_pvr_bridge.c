@@ -94,11 +94,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #endif
 #include <linux/file.h>
 #include <linux/version.h>
-#if (LINUX_VERSION_CODE < KERNEL_VERSION(3,10,0))
-#include <linux/sync.h>
-#else
-#include <../drivers/staging/android/sync.h>
-#endif
+#include "pvr_sync.h"
 #endif
 
 #include "srvkm.h"
@@ -3178,17 +3174,10 @@ PVRSRVSwapToDCBuffer2BW(IMG_UINT32 ui32BridgeID,
 	}
 
 #if defined(PVR_ANDROID_NATIVE_WINDOW_HAS_SYNC)
-	if(hFence)
-	{
-		struct sync_fence *psFence = hFence;
-		sync_fence_install(psFence, iReleaseFd);
-		psSwapDispClassBufferOUT->hFence = (IMG_HANDLE)iReleaseFd;
-	}
-	else
-	{
-		psSwapDispClassBufferOUT->hFence = (IMG_HANDLE)-1;
-		put_unused_fd(iReleaseFd);
-	}
+	/* No retire fences (see pvr_sync.h): hFence stays NULL */
+	WARN_ON(hFence);
+	psSwapDispClassBufferOUT->hFence = (IMG_HANDLE)-1;
+	put_unused_fd(iReleaseFd);
 #else /* defined(PVR_ANDROID_NATIVE_WINDOW_HAS_SYNC) */
 	psSwapDispClassBufferOUT->hFence = (IMG_HANDLE)-1;
 #endif /* defined(PVR_ANDROID_NATIVE_WINDOW_HAS_SYNC) */

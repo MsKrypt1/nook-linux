@@ -39,337 +39,70 @@ IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 */ /**************************************************************************/
 
-#include "ion.h"
 
-/* Three possible configurations:
- *
- *  - SUPPORT_ION && CONFIG_ION_OMAP
- *    Real ion support, but sharing with an SOC ion device. We need
- *    to co-share the heaps too.
- *
- *  - SUPPORT_ION && !CONFIG_ION_OMAP
- *    "Reference" ion implementation. Creates its own ion device
- *    and heaps for the driver to use.
+/*
+ * Mainline has no ION (removed in v5.11). An ION buffer handed over by user
+ * space is a file descriptor of a dma-buf, so the import is done on the
+ * dma-buf API: attach to the SGX device, map, and read the page addresses
+ * from the sg_table. The SGX has its own MMU and no IOMMU in front of it, so
+ * the DMA addresses are the physical addresses it needs.
  */
+
+#include "ion.h"
 
 #if defined(SUPPORT_ION)
 
-#include <linux/scatterlist.h>
-#include <linux/kernel.h>
-#include <linux/slab.h>
+#include <linux/dma-buf.h>
 #include <linux/err.h>
-#include SUPPORT_ION_PRIV_HEADER
+#include <linux/module.h>
+#include <linux/platform_device.h>
+#include <linux/scatterlist.h>
+#include <linux/slab.h>
 
-#if defined(CONFIG_ION_OMAP)
-#include <linux/omap_ion.h>
+MODULE_IMPORT_NS("DMA_BUF");
 
-/* Real ion with sharing */
-
-extern struct ion_device *omap_ion_device;
-struct ion_device *gpsIonDev;
-
-PVRSRV_ERROR IonInit(IMG_VOID)
-{
-	gpsIonDev = omap_ion_device;
-	return PVRSRV_OK;
-}
-
-IMG_VOID IonDeinit(IMG_VOID)
-{
-	gpsIonDev = IMG_NULL;
-}
-
-#else /* defined(CONFIG_ION_OMAP) */
-
-#if defined(CONFIG_ION_S5P)
-
-/* Real ion with sharing (s5pv210) */
-
-extern struct ion_device *s5p_ion_device;
-struct ion_device *gpsIonDev;
-
-PVRSRV_ERROR IonInit(IMG_VOID)
-{
-	gpsIonDev = s5p_ion_device;
-	return PVRSRV_OK;
-}
-
-IMG_VOID IonDeinit(IMG_VOID)
-{
-	gpsIonDev = IMG_NULL;
-}
-
-#else /* defined(CONFIG_ION_S5P) */
-
-#if defined(CONFIG_ION_SUNXI)
-
-/* Real ion with sharing (sunxi) */
-
-extern struct ion_device *sunxi_ion_device;
-struct ion_device *gpsIonDev;
-
-PVRSRV_ERROR IonInit(IMG_VOID)
-{
-	gpsIonDev = sunxi_ion_device;
-	return PVRSRV_OK;
-}
-
-IMG_VOID IonDeinit(IMG_VOID)
-{
-	gpsIonDev = IMG_NULL;
-}
-
-#else /* defined(CONFIG_ION_SUNXI) */
-
-#if defined(CONFIG_ION_INCDHAD1)
-
-/* Real ion with sharing (incdhad1) */
-
-extern struct ion_device *incdhad1_ion_device;
-struct ion_device *gpsIonDev;
-
-PVRSRV_ERROR IonInit(IMG_VOID)
-{
-	gpsIonDev = incdhad1_ion_device;
-	return PVRSRV_OK;
-}
-
-
-IMG_VOID IonDeinit(IMG_VOID)
-{
-	gpsIonDev = IMG_NULL;
-}
-
-#else /* defined(CONFIG_ION_INCDHAD1) */
-
-/* "Reference" ion implementation */
-
-#include <linux/version.h>
-#include "ion_sys_private.h"
-#include "lma_heap_ion.h"
-
-static struct ion_heap **gapsIonHeaps;
-struct ion_device *gpsIonDev;
-
-#if defined(LMA)
-struct ion_platform_data gsTCIonConfig = {
-        .nr = 1,
-        .heaps =
-#if (LINUX_VERSION_CODE < KERNEL_VERSION(3,4,39))
-#else
-                (struct ion_platform_heap [])
-#endif
-                {
-                        {
-                                /* This heap must be first. The base address and size are filled
-                                   in from data passed down by sysconfig.c. */
-                                .type = ION_HEAP_TYPE_CUSTOM,
-                                .name = "tc_local_mem",
-                                .id = ION_HEAP_TYPE_CUSTOM,
-                                .base = 0,                      /* filled in later */
-                                .size = 0,                      /* filled in later */
-                        }
-                }
-};
-
-PVRSRV_ERROR IonInit(void *pvPrivateData)
-{
-        PVRSRV_ERROR eError = PVRSRV_OK;
-        int i;
-
-        ION_TC_PRIVATE_DATA sPrivateData = *(ION_TC_PRIVATE_DATA *)pvPrivateData;
-
-        /* Fill in the heap base and size according to the private data. */
-        gsTCIonConfig.heaps[0].base = sPrivateData.uiHeapBase;
-        gsTCIonConfig.heaps[0].size = sPrivateData.uiHeapSize;
-
-        gapsIonHeaps = kzalloc(sizeof(struct ion_heap *) * gsTCIonConfig.nr,
-                                                   GFP_KERNEL);
-        gpsIonDev = ion_device_create(NULL);
-        if (IS_ERR_OR_NULL(gpsIonDev))
-        {
-                kfree(gapsIonHeaps);
-                return PVRSRV_ERROR_OUT_OF_MEMORY;
-        }
-
-        for (i = 0; i < gsTCIonConfig.nr; i++)
-        {
-                struct ion_platform_heap *psPlatHeapData = &gsTCIonConfig.heaps[i];
-
-                switch (psPlatHeapData->type)
-                {
-                        case ION_HEAP_TYPE_CUSTOM:
-                                /* Custom heap: this is used to mean a TC-specific heap,
-                                   which allocates from local memory. */
-                                gapsIonHeaps[i] = lma_heap_create(psPlatHeapData);
-                                break;
-                        default:
-                                /* For any other type of heap, hand this to ion to create as
-                                   appropriate. We don't necessarily need any of these -
-                                   this just gives us the flexibility to have another kind
-                                   of heap if necessary. */
-                                gapsIonHeaps[i] = ion_heap_create(psPlatHeapData);
-                                break;
-                }
-
-                if (IS_ERR_OR_NULL(gapsIonHeaps[i]))
-                {
-                        printk("%s: Failed to create ion heap '%s'", __func__, psPlatHeapData->name);
-                        IonDeinit();
-			return PVRSRV_ERROR_OUT_OF_MEMORY;
-                }
-
-                ion_device_add_heap(gpsIonDev, gapsIonHeaps[i]);
-        }
-
-        return eError;
-}
-
-void IonDeinit(void)
-{
-        int i;
-        for (i = 0; i < gsTCIonConfig.nr; i++)
-                if (gapsIonHeaps[i])
-                        ion_heap_destroy(gapsIonHeaps[i]);
-        kfree(gapsIonHeaps);
-        ion_device_destroy(gpsIonDev);
-}
-
-#else
-
-#if defined(ION_CARVEOUT_MEM_BASE) && defined(ION_CARVEOUT_MEM_SIZE)
-/* Only define the carveout heap on boards with BASE and SIZE defined,
- * otherwise crashes may be seen when empty cache flushes are issued
- * (seen on the MIPS architecture).
- */
-#define ION_HAS_CARVEOUT_HEAP
-#endif
-
-static struct ion_platform_data gsGenericConfig =
-{
-#if defined(ION_HAS_CARVEOUT_HEAP)
-	.nr = 3,
-#else
-	.nr = 2,
-#endif
-	.heaps =
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(3,4,39))
-	(struct ion_platform_heap [])
-#endif
-	{
-		{
-			.type = ION_HEAP_TYPE_SYSTEM,
-			.name = "system",
-			.id   = ION_HEAP_TYPE_SYSTEM,
-		},
-		{
-			.type = ION_HEAP_TYPE_DMA,
-			.name = "dma",
-			.id   = ION_HEAP_TYPE_DMA,
-		},
-#if defined(ION_HAS_CARVEOUT_HEAP)
-		{
-			.type = ION_HEAP_TYPE_CARVEOUT,
-			.name = "carveout",
-			.id   = ION_HEAP_TYPE_CARVEOUT,
-			.base = ION_CARVEOUT_MEM_BASE,
-			.size = ION_CARVEOUT_MEM_SIZE,
-		},
-#endif /* defined(ION_HAS_CARVEOUT_HEAP) */
-	}
-};
-
-PVRSRV_ERROR IonInit(IMG_VOID)
-{
-	int uiHeapCount = gsGenericConfig.nr;
-	int uiError;
-	int i;
-
-	gapsIonHeaps = kzalloc(sizeof(struct ion_heap *) * uiHeapCount, GFP_KERNEL);
-	/* Create the ion devicenode */
-	gpsIonDev = ion_device_create(NULL);
-	if (IS_ERR_OR_NULL(gpsIonDev)) {
-		kfree(gapsIonHeaps);
-		return PVRSRV_ERROR_OUT_OF_MEMORY;
-	}
-
-	/* Register all the heaps */
-	for (i = 0; i < gsGenericConfig.nr; i++)
-	{
-		struct ion_platform_heap *psPlatHeapData = &gsGenericConfig.heaps[i];
-
-		gapsIonHeaps[i] = ion_heap_create(psPlatHeapData);
-		if (IS_ERR_OR_NULL(gapsIonHeaps[i]))
-		{
-			uiError = PTR_ERR(gapsIonHeaps[i]);
-			goto failHeapCreate;
-		}
-		ion_device_add_heap(gpsIonDev, gapsIonHeaps[i]);
-	}
-
-	return PVRSRV_OK;
-failHeapCreate:
-	for (i = 0; i < uiHeapCount; i++)
-	{
-		if (gapsIonHeaps[i])
-		{
-				ion_heap_destroy(gapsIonHeaps[i]);
-		}
-	}
-	kfree(gapsIonHeaps);
-	return PVRSRV_ERROR_OUT_OF_MEMORY;
-}
-
-IMG_VOID IonDeinit(IMG_VOID)
-{
-	int uiHeapCount = gsGenericConfig.nr;
-	int i;
-
-	for (i = 0; i < uiHeapCount; i++)
-	{
-		if (gapsIonHeaps[i])
-		{
-				ion_heap_destroy(gapsIonHeaps[i]);
-		}
-	}
-	kfree(gapsIonHeaps);
-	ion_device_destroy(gpsIonDev);
-}
-
-#endif /* defined(LMA) */
-
-#endif /* defined(CONFIG_ION_INCDHAD1) */
-
-#endif /* defined(CONFIG_ION_SUNXI) */
-
-#endif /* defined(CONFIG_ION_S5P) */
-
-#endif /* defined(CONFIG_ION_OMAP) */
+extern struct platform_device *gpsPVRLDMDev;
 
 #define MAX_IMPORT_ION_FDS 3
 
 typedef struct _ION_IMPORT_DATA_
 {
-	/* ion client handles are imported into */
-	struct ion_client *psIonClient;
+	IMG_UINT32 ui32NumBuffers;
+	struct dma_buf *apsDmaBuf[MAX_IMPORT_ION_FDS];
+	struct dma_buf_attachment *apsAttachment[MAX_IMPORT_ION_FDS];
+	struct sg_table *apsSgTable[MAX_IMPORT_ION_FDS];
 
-	/* Number of ion handles represented by this import */
-	IMG_UINT32 ui32NumIonHandles;
-
-	/* Array of ion handles in use by services */
-	struct ion_handle *apsIonHandle[MAX_IMPORT_ION_FDS];
-
-	/* Array of physical addresses represented by these buffers */
+	/* Physical addresses of all pages of all buffers, in order */
 	IMG_SYS_PHYADDR *psSysPhysAddr;
-
-#if defined(PDUMP)
-	/* If ui32NumBuffers is 1 and ion_map_kernel() is implemented by the
-	 * allocator, this may be non-NULL. Otherwise it will be NULL.
-	 */
-	IMG_PVOID pvKernAddr0;
-#endif /* defined(PDUMP) */
 }
 ION_IMPORT_DATA;
+
+PVRSRV_ERROR IonInit(IMG_VOID)
+{
+	return PVRSRV_OK;
+}
+
+IMG_VOID IonDeinit(IMG_VOID)
+{
+}
+
+static IMG_VOID IonReleaseBuffers(ION_IMPORT_DATA *psImportData)
+{
+	IMG_UINT32 i;
+
+	for (i = 0; i < psImportData->ui32NumBuffers; i++)
+	{
+		if (!IS_ERR_OR_NULL(psImportData->apsSgTable[i]))
+			dma_buf_unmap_attachment_unlocked(psImportData->apsAttachment[i],
+							  psImportData->apsSgTable[i],
+							  DMA_BIDIRECTIONAL);
+		if (!IS_ERR_OR_NULL(psImportData->apsAttachment[i]))
+			dma_buf_detach(psImportData->apsDmaBuf[i],
+				       psImportData->apsAttachment[i]);
+		if (!IS_ERR_OR_NULL(psImportData->apsDmaBuf[i]))
+			dma_buf_put(psImportData->apsDmaBuf[i]);
+	}
+}
 
 PVRSRV_ERROR IonImportBufferAndAcquirePhysAddr(IMG_HANDLE hIonDev,
 											   IMG_UINT32 ui32NumFDs,
@@ -380,216 +113,117 @@ PVRSRV_ERROR IonImportBufferAndAcquirePhysAddr(IMG_HANDLE hIonDev,
 											   IMG_HANDLE *phPriv,
 											   IMG_HANDLE *phUnique)
 {
-	struct scatterlist *psTemp, *psScatterList[MAX_IMPORT_ION_FDS] = {};
-	PVRSRV_ERROR eError = PVRSRV_ERROR_OUT_OF_MEMORY;
-	struct ion_client *psIonClient = hIonDev;
-	IMG_UINT32 i, k, ui32PageCount = 0;
 	ION_IMPORT_DATA *psImportData;
+	PVRSRV_ERROR eError;
+	IMG_UINT32 i, k, ui32PageCount = 0;
+	struct scatterlist *sg;
+	unsigned int j;
 
-	if(ui32NumFDs > MAX_IMPORT_ION_FDS)
+	PVR_UNREFERENCED_PARAMETER(hIonDev);
+
+	if (ui32NumFDs == 0 || ui32NumFDs > MAX_IMPORT_ION_FDS)
 	{
-		printk(KERN_ERR "%s: More ion export fds passed in than supported "
-						"(%d provided, %d max)", __func__, ui32NumFDs,
-						MAX_IMPORT_ION_FDS);
+		printk(KERN_ERR "%s: %u buffer fds passed in (max %d)\n", __func__,
+			   ui32NumFDs, MAX_IMPORT_ION_FDS);
 		return PVRSRV_ERROR_INVALID_PARAMS;
 	}
 
-	psImportData = kzalloc(sizeof(ION_IMPORT_DATA), GFP_KERNEL);
+	if (gpsPVRLDMDev == IMG_NULL)
+	{
+		return PVRSRV_ERROR_NOT_SUPPORTED;
+	}
+
+	psImportData = kzalloc(sizeof(*psImportData), GFP_KERNEL);
 	if (psImportData == NULL)
 	{
-		goto exitFailKMallocImportData;
+		return PVRSRV_ERROR_OUT_OF_MEMORY;
 	}
 
-	/* Set up import data for free call */
-	psImportData->psIonClient = psIonClient;
-	psImportData->ui32NumIonHandles = ui32NumFDs;
-
-	for(i = 0; i < ui32NumFDs; i++)
+	eError = PVRSRV_ERROR_BAD_MAPPING;
+	for (i = 0; i < ui32NumFDs; i++)
 	{
-		int fd = (int)pai32BufferFDs[i];
-		struct sg_table *psSgTable;
+		psImportData->ui32NumBuffers = i + 1;
 
-		psImportData->apsIonHandle[i] = ion_import_dma_buf(psIonClient, fd);
-		if (psImportData->apsIonHandle[i] == IMG_NULL)
+		psImportData->apsDmaBuf[i] = dma_buf_get(pai32BufferFDs[i]);
+		if (IS_ERR(psImportData->apsDmaBuf[i]))
 		{
-			eError = PVRSRV_ERROR_BAD_MAPPING;
 			goto exitFailImport;
 		}
 
-		psSgTable = ion_sg_table(psIonClient, psImportData->apsIonHandle[i]);
-		psScatterList[i] = psSgTable->sgl;
-		if (psScatterList[i] == NULL)
+		psImportData->apsAttachment[i] =
+			dma_buf_attach(psImportData->apsDmaBuf[i], &gpsPVRLDMDev->dev);
+		if (IS_ERR(psImportData->apsAttachment[i]))
 		{
-			eError = PVRSRV_ERROR_INVALID_PARAMS;
 			goto exitFailImport;
 		}
 
-		/* Although all heaps will provide an sg_table, the tables cannot
-		 * always be trusted because sg_lists are just pointers to "struct
-		 * page" values, and some memory e.g. carveout may not have valid
-		 * "struct page" values. In particular, on ARM, carveout is
-		 * generally reserved with memblock_remove(), which leaves the
-		 * "struct page" entries uninitialized when SPARSEMEM is enabled.
-		 * The effect of this is that page_to_pfn(pfn_to_page(pfn)) != pfn.
-		 *
-		 * There's more discussion on this mailing list thread:
-		 * http://lists.linaro.org/pipermail/linaro-mm-sig/2012-August/002440.html
-		 *
-		 * If the heap this buffer comes from implements ->phys(), it's
-		 * probably a contiguous allocator. If the phys() function is
-		 * implemented, we'll use it to check sg_table->sgl[0]. If we find
-		 * they don't agree, we'll assume phys() is more reliable and use
-		 * that.
-		 *
-		 * Some heaps out there will implement phys() even though they are
-		 * not for physically contiguous allocations (so the sg_table must
-		 * be used). Therefore use the sg_table if the phys() and first
-		 * sg_table entry match. This should be reliable because for most
-		 * contiguous allocators, the sg_table should be a single span
-		 * from 'start' to 'start+size'.
-		 *
-		 * Also, ion prints out an error message if the heap doesn't implement
-		 * ->phys(), which we want to avoid, so only use ->phys() if the
-		 * sg_table contains a single span and the heap type isn't SYSTEM,
-		 * therefore it could plausibly be a contiguous allocator.
-		 */
-		if(!sg_next(psScatterList[i]) &&
-			psImportData->apsIonHandle[i]->buffer->heap->type != ION_HEAP_TYPE_SYSTEM)
+		psImportData->apsSgTable[i] =
+			dma_buf_map_attachment_unlocked(psImportData->apsAttachment[i],
+							DMA_BIDIRECTIONAL);
+		if (IS_ERR(psImportData->apsSgTable[i]))
 		{
-			ion_phys_addr_t sPhyAddr;
-			size_t sLength;
-
-			if(!ion_phys(psIonClient, psImportData->apsIonHandle[i],
-						 &sPhyAddr, &sLength))
-			{
-				BUG_ON(sLength & ~PAGE_MASK);
-
-				if(sg_phys(psScatterList[i]) != sPhyAddr)
-				{
-					psScatterList[i] = IMG_NULL;
-					ui32PageCount += sLength / PAGE_SIZE;
-				}
-			}
+			goto exitFailImport;
 		}
 
-		for(psTemp = psScatterList[i]; psTemp; psTemp = sg_next(psTemp))
+		for_each_sgtable_dma_sg(psImportData->apsSgTable[i], sg, j)
 		{
-			IMG_UINT32 j;
-			for (j = 0; j < psTemp->length; j += PAGE_SIZE)
+			if ((sg_dma_address(sg) | sg_dma_len(sg)) & ~PAGE_MASK)
 			{
-				ui32PageCount++;
+				eError = PVRSRV_ERROR_INVALID_PARAMS;
+				goto exitFailImport;
 			}
+			ui32PageCount += sg_dma_len(sg) >> PAGE_SHIFT;
 		}
 	}
 
-	BUG_ON(ui32PageCount == 0);
-
-	psImportData->psSysPhysAddr = kmalloc(sizeof(IMG_SYS_PHYADDR) * ui32PageCount, GFP_KERNEL);
-	if (psImportData->psSysPhysAddr == NULL)
+	if (ui32PageCount == 0)
 	{
+		eError = PVRSRV_ERROR_INVALID_PARAMS;
 		goto exitFailImport;
 	}
 
-	for(i = 0, k = 0; i < ui32NumFDs; i++)
+	psImportData->psSysPhysAddr = kmalloc_array(ui32PageCount,
+						    sizeof(IMG_SYS_PHYADDR),
+						    GFP_KERNEL);
+	if (psImportData->psSysPhysAddr == NULL)
 	{
-		u32* tiler_addrs;
-		int tiler_pages;
+		eError = PVRSRV_ERROR_OUT_OF_MEMORY;
+		goto exitFailImport;
+	}
 
-
-#if defined(CONFIG_ION_OMAP)
-		if (ui32NumFDs == 2 && !omap_tiler_pages(psIonClient, psImportData->apsIonHandle[i], &tiler_pages, &tiler_addrs)) {
-			int tiler_n = 0;
-			for (tiler_n = 0; tiler_n < tiler_pages; tiler_n++) {
-				psImportData->psSysPhysAddr[k].uiAddr = tiler_addrs[tiler_n];
-				k++;
-			}
-		}
-		else if(psScatterList[i])
-#else
-		if(psScatterList[i])
-#endif
+	for (i = 0, k = 0; i < ui32NumFDs; i++)
+	{
+		for_each_sgtable_dma_sg(psImportData->apsSgTable[i], sg, j)
 		{
-			for(psTemp = psScatterList[i]; psTemp; psTemp = sg_next(psTemp))
-			{
-				IMG_UINT32 j;
-				for (j = 0; j < psTemp->length; j += PAGE_SIZE)
-				{
-					psImportData->psSysPhysAddr[k].uiAddr = sg_phys(psTemp) + j;
-					k++;
-				}
-			}
-		}
-		else
-		{
-			ion_phys_addr_t sPhyAddr;
-			size_t sLength, j;
+			dma_addr_t sAddr = sg_dma_address(sg);
+			unsigned int uiLen;
 
-			ion_phys(psIonClient, psImportData->apsIonHandle[i],
-					 &sPhyAddr, &sLength);
-
-			for(j = 0; j < sLength; j += PAGE_SIZE)
+			for (uiLen = 0; uiLen < sg_dma_len(sg); uiLen += PAGE_SIZE)
 			{
-				psImportData->psSysPhysAddr[k].uiAddr = sPhyAddr + j;
-				k++;
+				psImportData->psSysPhysAddr[k++].uiAddr = sAddr + uiLen;
 			}
 		}
 	}
 
 	*pui32PageCount = ui32PageCount;
 	*ppsSysPhysAddr = psImportData->psSysPhysAddr;
-
-#if defined(PDUMP)
-	if(ui32NumFDs == 1)
-	{
-		IMG_PVOID pvKernAddr0;
-
-		pvKernAddr0 = ion_map_kernel(psIonClient, psImportData->apsIonHandle[0]);
-		if (IS_ERR(pvKernAddr0))
-		{
-			pvKernAddr0 = IMG_NULL;
-		}
-
-		psImportData->pvKernAddr0 = pvKernAddr0;
-		*ppvKernAddr0 = pvKernAddr0;
-	}
-	else
-#endif /* defined(PDUMP) */
-	{
-		*ppvKernAddr0 = NULL;
-	}
-
+	*ppvKernAddr0 = IMG_NULL;
 	*phPriv = psImportData;
 	*phUnique = (IMG_HANDLE)psImportData->psSysPhysAddr[0].uiAddr;
 
 	return PVRSRV_OK;
 
 exitFailImport:
-	for(i = 0; psImportData->apsIonHandle[i] != NULL; i++)
-	{
-		ion_free(psIonClient, psImportData->apsIonHandle[i]);
-	}
+	IonReleaseBuffers(psImportData);
 	kfree(psImportData);
-exitFailKMallocImportData:
 	return eError;
 }
 
 IMG_VOID IonUnimportBufferAndReleasePhysAddr(IMG_HANDLE hPriv)
 {
 	ION_IMPORT_DATA *psImportData = hPriv;
-	IMG_UINT32 i;
 
-#if defined(PDUMP)
-	if (psImportData->pvKernAddr0)
-	{
-		ion_unmap_kernel(psImportData->psIonClient, psImportData->apsIonHandle[0]);
-	}
-#endif /* defined(PDUMP) */
-
-	for(i = 0; i < psImportData->ui32NumIonHandles; i++)
-	{
-		ion_free(psImportData->psIonClient, psImportData->apsIonHandle[i]);
-	}
-
+	IonReleaseBuffers(psImportData);
 	kfree(psImportData->psSysPhysAddr);
 	kfree(psImportData);
 }

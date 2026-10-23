@@ -46,12 +46,11 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "ttrace.h"
 
 #if defined(PVR_ANDROID_NATIVE_WINDOW_HAS_SYNC)
-#include <linux/version.h>
-#if (LINUX_VERSION_CODE < KERNEL_VERSION(3,10,0))
-#include <linux/sw_sync.h>
-#else
-#include <../drivers/staging/android/sw_sync.h>
-#endif
+/*
+ * No sw_sync in mainline: the display class retire fences (the only users
+ * of the queue timeline) are not supported, see pvr_sync.h.
+ */
+#include "pvr_sync.h"
 
 #if defined(DEBUG_LINUX_MEMORY_ALLOCATIONS)
 #include <linux/list.h>
@@ -109,23 +108,6 @@ static void PVRSyncWorkQueueFunction(struct work_struct *data)
 }
 #endif
 
-static struct sync_fence *AllocQueueFence(struct sw_sync_timeline *psTimeline, IMG_UINT32 ui32FenceValue, const char *szName)
-{
-	struct sync_fence *psFence = IMG_NULL;
-	struct sync_pt *psPt;
-
-	psPt = sw_sync_pt_create(psTimeline, ui32FenceValue);
-	if(psPt)
-	{
-		psFence = sync_fence_create(szName, psPt);
-		if(!psFence)
-		{
-			sync_pt_free(psPt);
-		}
-	}
-
-	return psFence;
-}
 #endif /* defined(PVR_ANDROID_NATIVE_WINDOW_HAS_SYNC) */
 
 /*
@@ -524,12 +506,7 @@ PVRSRV_ERROR IMG_CALLCONV PVRSRVCreateCommandQueueKM(IMG_SIZE_T uQueueSize,
 	psQueueInfo->uQueueSize = uPower2QueueSize;
 
 #if defined(PVR_ANDROID_NATIVE_WINDOW_HAS_SYNC)
-	psQueueInfo->pvTimeline = sw_sync_timeline_create("pvr_queue_proc");
-	if(psQueueInfo->pvTimeline == IMG_NULL)
-	{
-		PVR_DPF((PVR_DBG_ERROR,"PVRSRVCreateCommandQueueKM: sw_sync_timeline_create() failed"));
-		goto ErrorExit;
-	}
+	psQueueInfo->pvTimeline = IMG_NULL;
 #endif
 
 	/* if this is the first q, create a lock resource for the q list */
@@ -668,10 +645,6 @@ PVRSRV_ERROR IMG_CALLCONV PVRSRVDestroyCommandQueueKM(PVRSRV_QUEUE_INFO *psQueue
 	}
 
 	ui32NoOfSwapchainCreated--;
-
-#if defined(PVR_ANDROID_NATIVE_WINDOW_HAS_SYNC)
-	sync_timeline_destroy(psQueueInfo->pvTimeline);
-#endif
 
 	if(psQueue == psQueueInfo)
 	{
@@ -878,40 +851,10 @@ PVRSRV_ERROR IMG_CALLCONV PVRSRVInsertCommandKM(PVRSRV_QUEUE_INFO	*psQueue,
 #if defined(PVR_ANDROID_NATIVE_WINDOW_HAS_SYNC)
 	if(phFence != IMG_NULL)
 	{
-		struct sync_fence *psRetireFence, *psCleanupFence;
-
-		/* New command? New timeline target */
-		psQueue->ui32FenceValue++;
-
-		psRetireFence = AllocQueueFence(psQueue->pvTimeline, psQueue->ui32FenceValue, "pvr_queue_retire");
-		if(!psRetireFence)
-		{
-			PVR_DPF((PVR_DBG_ERROR, "PVRSRVInsertCommandKM: sync_fence_create() failed"));
-			psQueue->ui32FenceValue--;
-			return PVRSRV_ERROR_INVALID_PARAMS;
-		}
-
-		/* This similar to the retire fence, except that it is destroyed
-		 * when a display command completes, rather than at the whim of
-		 * userspace. It is used to keep the timeline alive.
-		 */
-		psCleanupFence = AllocQueueFence(psQueue->pvTimeline, psQueue->ui32FenceValue, "pvr_queue_cleanup");
-		if(!psCleanupFence)
-		{
-			PVR_DPF((PVR_DBG_ERROR, "PVRSRVInsertCommandKM: sync_fence_create() #2 failed"));
-			sync_fence_put(psRetireFence);
-			psQueue->ui32FenceValue--;
-			return PVRSRV_ERROR_INVALID_PARAMS;
-		}
-
-		psCommand->pvCleanupFence = psCleanupFence;
-		psCommand->pvTimeline = psQueue->pvTimeline;
-		*phFence = psRetireFence;
+		PVR_DPF((PVR_DBG_ERROR, "PVRSRVInsertCommandKM: retire fences are not supported"));
+		return PVRSRV_ERROR_NOT_SUPPORTED;
 	}
-	else
-	{
-		psCommand->pvTimeline = IMG_NULL;
-	}
+	psCommand->pvTimeline = IMG_NULL;
 #endif /* defined(PVR_ANDROID_NATIVE_WINDOW_HAS_SYNC) */
 
 	psCommand->ui32ProcessID	= OSGetCurrentProcessIDKM();
@@ -1487,11 +1430,7 @@ IMG_VOID PVRSRVCommandCompleteKM(IMG_HANDLE	hCmdCookie,
 	}
 
 #if defined(PVR_ANDROID_NATIVE_WINDOW_HAS_SYNC)
-	if(psCmdCompleteData->pvTimeline)
-	{
-		sw_sync_timeline_inc(psCmdCompleteData->pvTimeline, 1);
-		sync_fence_put(psCmdCompleteData->pvCleanupFence);
-	}
+	/* pvTimeline is always NULL, see PVRSRVInsertCommandKM */
 #endif /* defined(PVR_ANDROID_NATIVE_WINDOW_HAS_SYNC) */
 
 	/* free command complete storage */

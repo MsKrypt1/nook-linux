@@ -45,19 +45,29 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #ifndef _PVR_SYNC_H
 #define _PVR_SYNC_H
 
-#include <linux/seq_file.h>
-#include <linux/version.h>
+/*
+ * Mainline has no Android staging sync framework (sync_timeline, sync_pt,
+ * sw_sync). pvr_sync.c is replaced by a minimal version on sync_file and
+ * dma_fence: fences that user space passes in as dependencies are waited
+ * for on the CPU before the work is queued, and the driver creates no
+ * fences of its own (no /dev/pvr_sync, no display class timeline).
+ * PVR_ANDROID_NATIVE_WINDOW_HAS_SYNC stays defined because it changes the
+ * kick structures that user space fills in.
+ */
 
-#if !defined(__KERNEL__) || (LINUX_VERSION_CODE < KERNEL_VERSION(3,10,0))
-#include <linux/sync.h>
-#else
-#include <../drivers/staging/android/sync.h>
-#endif
+#include <linux/bug.h>
+#include <linux/types.h>
 
 #include "pvr_sync_user.h"
 #include "servicesint.h" // PVRSRV_DEVICE_SYNC_OBJECT
 
-/* services4 internal interface */
+/* Never instantiated: the replacement hands out no fences. */
+struct sync_fence;
+
+static inline void sync_fence_put(struct sync_fence *psFence)
+{
+	WARN_ON(psFence);
+}
 
 int PVRSyncDeviceInit(void);
 void PVRSyncDeviceDeInit(void);
