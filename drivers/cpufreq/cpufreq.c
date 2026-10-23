@@ -2802,6 +2802,12 @@ int cpufreq_boost_set_sw(struct cpufreq_policy *policy, int state)
 	if (!policy->freq_table)
 		return -ENXIO;
 
+	/*
+	 * cpufreq_frequency_table_cpuinfo() keeps a cpuinfo.max_freq above the
+	 * table's maximum, so with boost going off it would keep the boost
+	 * frequency: recompute it from the table.
+	 */
+	policy->cpuinfo.max_freq = 0;
 	ret = cpufreq_frequency_table_cpuinfo(policy);
 	if (ret)
 		pr_err("%s: Policy frequency update failed\n", __func__);
