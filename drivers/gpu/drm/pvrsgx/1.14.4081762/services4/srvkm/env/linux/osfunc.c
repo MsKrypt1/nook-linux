@@ -127,8 +127,12 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #endif
 
 /* should have been defined by #include "services_headers.h" or #include <linux/minmax.h> but isn't */
+#ifndef MAX
 #define MAX(a,b) 					(((a) > (b)) ? (a) : (b))
+#endif
+#ifndef MIN
 #define MIN(a,b) 					(((a) < (b)) ? (a) : (b))
+#endif
 
 #if defined(EMULATOR)
 #define EVENT_OBJECT_TIMEOUT_MS		(2000)

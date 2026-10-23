@@ -56,8 +56,12 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "pdump_osfunc.h"
 
 /* should have been defined by #include "services_headers.h" or #include <linux/minmax.h> but isn't */
+#ifndef MAX
 #define MAX(a,b) 					(((a) > (b)) ? (a) : (b))
+#endif
+#ifndef MIN
 #define MIN(a,b) 					(((a) < (b)) ? (a) : (b))
+#endif
 
 #define UINT32_MAX_VALUE	0xFFFFFFFFUL
 

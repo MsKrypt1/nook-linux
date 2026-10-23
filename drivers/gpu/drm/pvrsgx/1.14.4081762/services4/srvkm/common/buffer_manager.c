@@ -49,8 +49,12 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "lists.h"
 
 /* should have been defined by #include "services_headers.h" or #include <linux/minmax.h> but isn't */
+#ifndef MAX
 #define MAX(a,b) 					(((a) > (b)) ? (a) : (b))
+#endif
+#ifndef MIN
 #define MIN(a,b) 					(((a) < (b)) ? (a) : (b))
+#endif
 
 static IMG_BOOL
 ZeroBuf(BM_BUF *pBuf, BM_MAPPING *pMapping, IMG_SIZE_T uBytes, IMG_UINT32 ui32Flags);

@@ -50,8 +50,6 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #define DEBUG		1
 #endif
 #if defined(__linux__) && defined(__KERNEL__)
-#undef MIN
-#undef MAX
 #include <linux/minmax.h>
 #endif
 

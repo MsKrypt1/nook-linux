@@ -85,7 +85,6 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 #if defined(PVR_LDM_DEVICE_TREE) && !defined(NO_HARDWARE)
 #define PVR_USE_DEVICE_TREE
-#include <linux/mod_devicetable.h>
 #endif
 
 #include <linux/init.h>
@@ -93,6 +92,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include <linux/module.h>
 #include <linux/fs.h>
 #include <linux/reset.h>
+#include <linux/mod_devicetable.h>
 
 #if defined(SUPPORT_DRI_DRM)
 #if (LINUX_VERSION_CODE < KERNEL_VERSION(5,5,0))
@@ -231,6 +231,8 @@ static int PVRSRVRelease(struct inode* pInode, struct file* pFile);
 static struct file_operations pvrsrv_fops =
 {
 	.owner=THIS_MODULE,
+	/* mmap offsets are handles, not file positions (was FMODE_UNSIGNED_OFFSET) */
+	.fop_flags = FOP_UNSIGNED_OFFSET,
 	.unlocked_ioctl = PVRSRV_BridgeDispatchKM,
 	.open=PVRSRVOpen,
 	.release=PVRSRVRelease,
@@ -262,7 +264,7 @@ static IMG_UINT32 gPVRPowerLevel;
  * This is the driver interface we support.  
  */
 #if defined(PVR_LDM_PLATFORM_MODULE)
-static int PVRSRVDriverRemove(LDM_DEV *device);
+static void PVRSRVDriverRemove(LDM_DEV *device);
 static int PVRSRVDriverProbe(LDM_DEV *device);
 #endif
 #if defined(PVR_LDM_PCI_MODULE)
@@ -494,7 +496,7 @@ static int __devinit PVRSRVDriverProbe(LDM_DEV *pDevice, const struct pci_device
 
 *****************************************************************************/
 #if defined (PVR_LDM_PLATFORM_MODULE)
-static int PVRSRVDriverRemove(LDM_DEV *pDevice)
+static void PVRSRVDriverRemove(LDM_DEV *pDevice)
 #endif
 #if defined(PVR_LDM_PCI_MODULE)
 static void __devexit PVRSRVDriverRemove(LDM_DEV *pDevice)
@@ -527,12 +529,6 @@ static void __devexit PVRSRVDriverRemove(LDM_DEV *pDevice)
 	}
 #endif
 
-#if defined (PVR_LDM_PLATFORM_MODULE)
-	return 0;
-#endif
-#if defined (PVR_LDM_PCI_MODULE)
-	return;
-#endif
 }
 #endif /* defined(PVR_LDM_MODULE) */
 
@@ -861,10 +857,6 @@ static int PVRSRVOpen(struct inode unref__ * pInode, struct file *pFile)
 
 	LinuxLockMutexNested(&gPVRSRVLock, PVRSRV_LOCK_CLASS_BRIDGE);
 
-#if !defined(SUPPORT_DRI_DRM)
-	pFile->f_mode |= FMODE_UNSIGNED_OFFSET;
-#endif
-
 	ui32PID = OSGetCurrentProcessIDKM();
 
 	if (PVRSRVProcessConnect(ui32PID, 0) != PVRSRV_OK)
@@ -1172,7 +1164,7 @@ static int __init PVRCore_Init(void)
 	 * This code (using GPL symbols) facilitates automatic device
 	 * node creation on platforms with udev (or similar).
 	 */
-	psPvrClass = class_create(THIS_MODULE, "pvr");
+	psPvrClass = class_create("pvr");
 
 	if (IS_ERR(psPvrClass))
 	{

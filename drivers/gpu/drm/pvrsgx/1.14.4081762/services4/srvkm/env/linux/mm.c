@@ -508,27 +508,39 @@ AllocFlagsToPGProt(pgprot_t *pPGProtFlags, IMG_UINT32 ui32AllocFlags)
 #else
 /* provide pre-5.8 __vmalloc() with 3 parameters */
 
-#include <linux/kallsyms.h>
-
-static void *__old_vmalloc_node(unsigned long size, unsigned long align,
-			    gfp_t gfp_mask, pgprot_t prot,
-			    int node, const void *caller)
-{
-#if (LINUX_VERSION_CODE < KERNEL_VERSION(6,10,0))
-/* we need to add EXPORT_SYMBOL(__vmalloc_node_range); to vmalloc.c */
-	return __vmalloc_node_range(size, align, VMALLOC_START, VMALLOC_END,
-				    gfp_mask, prot, 0, node, caller);
-#else
-/* we need to add EXPORT_SYMBOL(__vmalloc_node_range_noprof); to vmalloc.c */
-	return __vmalloc_node_range_noprof(size, align, VMALLOC_START, VMALLOC_END,
-				    gfp_mask, prot, 0, node, caller);
-#endif
-}
-
+/*
+ * __vmalloc_node_range(), which takes a pgprot, is not exported. Allocate the
+ * pages and vmap() them with the protection instead: with VM_MAP_PUT_PAGES,
+ * vfree() releases the pages and the array, as for a vmalloc() area.
+ */
 static void *__old_vmalloc(unsigned long size, gfp_t gfp_mask, pgprot_t prot)
 {
-	return __old_vmalloc_node(size, 1, gfp_mask, prot, NUMA_NO_NODE,
-				__builtin_return_address(0));
+	unsigned int i, uiNumPages = PAGE_ALIGN(size) >> PAGE_SHIFT;
+	struct page **ppsPages;
+	void *pvAddr;
+
+	ppsPages = kvmalloc_array(uiNumPages, sizeof(*ppsPages), GFP_KERNEL);
+	if (!ppsPages)
+		return NULL;
+
+	for (i = 0; i < uiNumPages; i++)
+	{
+		ppsPages[i] = alloc_page(gfp_mask);
+		if (!ppsPages[i])
+			goto err_free;
+	}
+
+	pvAddr = vmap(ppsPages, uiNumPages, VM_MAP | VM_MAP_PUT_PAGES, prot);
+	if (!pvAddr)
+		goto err_free;
+
+	return pvAddr;
+
+err_free:
+	while (i--)
+		__free_page(ppsPages[i]);
+	kvfree(ppsPages);
+	return NULL;
 }
 #endif
 
@@ -926,14 +938,13 @@ FreePagePool(IMG_VOID)
 }
 
 #if defined(PVR_LINUX_MEM_AREA_POOL_ALLOW_SHRINK)
-#if defined(PVRSRV_NEED_PVR_ASSERT)
-static struct shrinker g_sShrinker;
-#endif
+/* Since v6.7 shrinkers are allocated with shrinker_alloc() */
+static struct shrinker *g_psShrinker;
 
 static unsigned long
 CountObjectsInPagePool(struct shrinker *psShrinker, struct shrink_control *psShrinkControl)
 {
-	PVR_ASSERT(psShrinker == &g_sShrinker);
+	PVR_ASSERT(psShrinker == g_psShrinker);
 	(void)psShrinker;
 	(void)psShrinkControl;
 
@@ -946,7 +957,7 @@ ScanObjectsInPagePool(struct shrinker *psShrinker, struct shrink_control *psShri
 	unsigned long uNumToScan = psShrinkControl->nr_to_scan;
 	LinuxPagePoolEntry *psPagePoolEntry, *psTempPoolEntry;
 
-	PVR_ASSERT(psShrinker == &g_sShrinker);
+	PVR_ASSERT(psShrinker == g_psShrinker);
 	(void)psShrinker;
 
 	PVR_TRACE(("%s: Number to scan: %ld", __FUNCTION__, uNumToScan));
@@ -2635,13 +2646,6 @@ static struct shrinker g_sShrinker =
         .shrink = ShrinkPagePool,
         .seeks = DEFAULT_SEEKS
 };
-#else
-static struct shrinker g_sShrinker = 
-{
-	.count_objects = CountObjectsInPagePool,
-	.scan_objects = ScanObjectsInPagePool,
-	.seeks = DEFAULT_SEEKS 
-};
 #endif
 
 static IMG_BOOL g_bShrinkerRegistered;
@@ -2670,7 +2674,8 @@ LinuxMMCleanup(IMG_VOID)
 #if defined(PVR_LINUX_MEM_AREA_POOL_ALLOW_SHRINK)
 	if (g_bShrinkerRegistered)
 	{
-		unregister_shrinker(&g_sShrinker);
+		shrinker_free(g_psShrinker);
+		g_psShrinker = IMG_NULL;
 	}
 #endif
 
@@ -2779,7 +2784,15 @@ LinuxMMInit(IMG_VOID)
 #endif
 
 #if defined(PVR_LINUX_MEM_AREA_POOL_ALLOW_SHRINK)
-	register_shrinker(&g_sShrinker);
+	g_psShrinker = shrinker_alloc(0, "pvrsrvkm-pagepool");
+	if (!g_psShrinker)
+	{
+		goto failed;
+	}
+	g_psShrinker->count_objects = CountObjectsInPagePool;
+	g_psShrinker->scan_objects = ScanObjectsInPagePool;
+	g_psShrinker->seeks = DEFAULT_SEEKS;
+	shrinker_register(g_psShrinker);
 	g_bShrinkerRegistered = IMG_TRUE;
 #endif
 

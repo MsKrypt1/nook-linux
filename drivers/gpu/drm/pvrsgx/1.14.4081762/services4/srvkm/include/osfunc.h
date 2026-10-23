@@ -52,11 +52,8 @@ extern "C" {
 #endif
 
 #if defined(__linux__) && defined(__KERNEL__)
-#if defined(MIN) && defined(MAX)
-#undef MIN
-#undef MAX
+/* The kernel's MIN()/MAX(); servicesint.h defines them only if missing */
 #include <linux/minmax.h>
-#endif
 #include <linux/hardirq.h>
 #include <linux/string.h>
 #if defined(__arm__)
@@ -719,7 +716,7 @@ static INLINE PVRSRV_ERROR OSReleasePhysPageAddr(IMG_HANDLE hOSWrapMem)
 static inline IMG_BOOL OSInLISR(IMG_VOID unref__ *pvSysData)
 {
 	PVR_UNREFERENCED_PARAMETER(pvSysData);
-	return (in_irq()) ? IMG_TRUE : IMG_FALSE;
+	return (in_hardirq()) ? IMG_TRUE : IMG_FALSE;
 }
 
 static inline IMG_VOID OSWriteMemoryBarrier(IMG_VOID)

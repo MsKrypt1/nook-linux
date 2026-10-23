@@ -59,6 +59,10 @@ extern "C" {
 */
 #define	ALIGNSIZE(size, alignshift)	(((size) + ((1UL << (alignshift))-1)) & ~((1UL << (alignshift))-1))
 
+#if defined(__linux__) && defined(__KERNEL__)
+/* The kernel's MIN()/MAX() win (linux/mm.h needs them) */
+#include <linux/minmax.h>
+#endif
 #ifndef MAX
 #define MAX(a,b) 					(((a) > (b)) ? (a) : (b))
 #endif

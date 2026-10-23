@@ -44,5 +44,6 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 MODULE_AUTHOR("Imagination Technologies Ltd. <gpl-support@imgtec.com>");
 MODULE_LICENSE("Dual MIT/GPL");
+MODULE_DESCRIPTION("PowerVR SGX services kernel driver");
 
 #endif	/* _PVRMODULE_H_ */

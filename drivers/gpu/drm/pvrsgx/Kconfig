@@ -1,0 +1,24 @@
+# SPDX-License-Identifier: GPL-2.0-only
+#
+# Out-of-tree PowerVR SGX kernel driver (openpvrsgx-devgroup layout), reduced
+# to the one DDK that matches the OMAP4470's Android user space.
+#
+
+config SGX_OMAP4470
+	tristate "PowerVR SGX544 rev 112 (OMAP4470), Android DDK 1.14@4081762"
+	depends on ARCH_OMAP4 && OF
+	depends on PREEMPTION || PREEMPT_VOLUNTARY
+	depends on DMA_SHARED_BUFFER && SYNC_FILE
+	help
+	  Services kernel driver (pvrsrvkm) for the SGX544 SC rev 112 in the
+	  TI OMAP4470, built from IMG's GPL DDK 1.14@4081762 with the
+	  options of TI's Android build for that chip (blaze_tablet.4470).
+	  It exposes /dev/pvrsrvkm for the matching closed user space
+	  (libsrv_um, pvrsrvinit, the EGL/GLES libraries).
+
+	  The build options, structure layouts and bridge numbering must
+	  match that user space exactly. Android-only kernel interfaces
+	  the DDK expects (ION, the staging sync framework, the gpu trace
+	  events) are replaced by local shims.
+
+	  If unsure, say N.
