@@ -4488,29 +4488,34 @@ static void per_cpu_cache_flush(void *arg)
 	flush_cache_all();
 }
 
+/*
+ * Whole outer cache clean+invalidate. The L2C code requires interrupts off
+ * for it (l2c210_flush_all: BUG_ON(!irqs_disabled())). It also stands in for
+ * a whole-cache clean: outer_clean_range(0, ULONG_MAX), which the DDK used,
+ * no longer falls back to a whole-cache op and would walk 4 GiB line by line.
+ */
+static void pvr_outer_flush_all(void)
+{
+#if defined(CONFIG_OUTER_CACHE)
+	unsigned long flags;
+
+	local_irq_save(flags);
+	outer_flush_all();
+	local_irq_restore(flags);
+#endif
+}
+
 IMG_VOID OSCleanCPUCacheKM(IMG_VOID)
 {
 	/* No full (inner) cache clean op */
 	ON_EACH_CPU(per_cpu_cache_flush, NULL, 1);
-#if defined(CONFIG_OUTER_CACHE)
-	outer_clean_range(0, ULONG_MAX);
-#endif
+	pvr_outer_flush_all();
 }
 
 IMG_VOID OSFlushCPUCacheKM(IMG_VOID)
 {
 	ON_EACH_CPU(per_cpu_cache_flush, NULL, 1);
-#if defined(CONFIG_OUTER_CACHE) && \
-	(LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,37))
-	/* To use the "deferred flush" (not clean) DDK feature you need a kernel
-	 * implementation of outer_flush_all() for ARM CPUs with an outer cache
-	 * controller (e.g. PL310, common with Cortex A9 and later).
-	 *
-	 * Reference DDKs don't require this functionality, as they will only
-	 * clean the cache, never flush (clean+invalidate) it.
-	 */
-	outer_flush_all();
-#endif
+	pvr_outer_flush_all();
 }
 
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,34))
