@@ -561,7 +561,7 @@ static void omap_crtc_mode_set_nofb(struct drm_crtc *crtc)
 	drm_display_mode_to_videomode(mode, &omap_crtc->vm);
 }
 
-static bool omap_crtc_is_manually_updated(struct drm_crtc *crtc)
+bool omap_crtc_is_manually_updated(struct drm_crtc *crtc)
 {
 	struct omap_crtc *omap_crtc = to_omap_crtc(crtc);
 	struct omap_dss_device *dssdev = omap_crtc->pipe->output;

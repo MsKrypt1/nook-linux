@@ -15,6 +15,7 @@
 #include <drm/drm_framebuffer.h>
 #include <drm/drm_gem_framebuffer_helper.h>
 #include <drm/drm_managed.h>
+#include <drm/drm_prime.h>
 #include <drm/drm_print.h>
 #include <drm/drm_util.h>
 
@@ -82,8 +83,29 @@ fallback:
 	return drm_fb_helper_pan_display(var, fbi);
 }
 
+/*
+ * Deferred I/O tracks userspace writes for displays that need a manual update.
+ * The others scan the buffer out continuously: map the GEM object directly
+ * then, instead of taking a write fault on each page after every flush.
+ */
+static bool omap_fbdev_needs_defio(struct drm_device *dev)
+{
+	struct drm_crtc *crtc;
+
+	drm_for_each_crtc(crtc, dev)
+		if (omap_crtc_is_manually_updated(crtc))
+			return true;
+
+	return false;
+}
+
 static int omap_fbdev_fb_mmap(struct fb_info *info, struct vm_area_struct *vma)
 {
+	struct drm_fb_helper *helper = info->par;
+
+	if (!vma->vm_pgoff && !omap_fbdev_needs_defio(helper->dev))
+		return drm_gem_prime_mmap(drm_gem_fb_get_obj(helper->fb, 0), vma);
+
 	vma->vm_page_prot = pgprot_writecombine(vma_get_page_prot(vma));
 
 	return fb_deferred_io_mmap(info, vma);
