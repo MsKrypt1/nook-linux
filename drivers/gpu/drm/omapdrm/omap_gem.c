@@ -583,7 +583,9 @@ static int omap_gem_object_mmap(struct drm_gem_object *obj, struct vm_area_struc
 int omap_gem_dumb_create(struct drm_file *file, struct drm_device *dev,
 		struct drm_mode_create_dumb *args)
 {
+	struct omap_drm_private *priv = dev->dev_private;
 	union omap_gem_size gsize = { };
+	u32 flags = OMAP_BO_SCANOUT | OMAP_BO_WC;
 	int ret;
 
 	ret = drm_mode_size_dumb(dev, args, SZ_8, 0);
@@ -591,8 +593,17 @@ int omap_gem_dumb_create(struct drm_file *file, struct drm_device *dev,
 		return ret;
 	gsize.bytes = args->size;
 
-	return omap_gem_new_handle(dev, file, gsize,
-			OMAP_BO_SCANOUT | OMAP_BO_WC, &args->handle);
+	/*
+	 * Dumb buffers are drawn by the CPU, and software compositors blend
+	 * into them, which reads them back: from a write-combined mapping
+	 * that is ~10x slower than from a cached one. With a DMM they are
+	 * shmem-backed, so make them cached: omap_framebuffer_pin() cleans the
+	 * pages the CPU has written before they are scanned out.
+	 */
+	if (priv->has_dmm)
+		flags = OMAP_BO_SCANOUT | OMAP_BO_CACHED;
+
+	return omap_gem_new_handle(dev, file, gsize, flags, &args->handle);
 }
 
 /**

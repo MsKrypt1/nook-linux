@@ -65,7 +65,17 @@ static int omap_framebuffer_dirty(struct drm_framebuffer *fb,
 				  struct drm_clip_rect *clips,
 				  unsigned num_clips)
 {
+	struct omap_framebuffer *omap_fb = to_omap_framebuffer(fb);
 	struct drm_crtc *crtc;
+	int i;
+
+	/* front-buffer rendering into a cached buffer: clean what was drawn */
+	mutex_lock(&omap_fb->lock);
+	if (omap_fb->pin_count > 0) {
+		for (i = 0; i < fb->format->num_planes; i++)
+			omap_gem_dma_sync_buffer(fb->obj[i], DMA_TO_DEVICE);
+	}
+	mutex_unlock(&omap_fb->lock);
 
 	drm_modeset_lock_all(fb->dev);
 
@@ -264,6 +274,9 @@ int omap_framebuffer_pin(struct drm_framebuffer *fb)
 	mutex_lock(&omap_fb->lock);
 
 	if (omap_fb->pin_count > 0) {
+		/* a cached buffer may have been drawn into while pinned */
+		for (i = 0; i < n; i++)
+			omap_gem_dma_sync_buffer(fb->obj[i], DMA_TO_DEVICE);
 		omap_fb->pin_count++;
 		mutex_unlock(&omap_fb->lock);
 		return 0;
