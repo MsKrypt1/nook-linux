@@ -89,7 +89,11 @@ static PVRSRV_ERROR EnableSGXClocksWrap(SYS_DATA *psSysData)
 #if !defined(SGX_OCP_NO_INT_BYPASS)
 	if(eError == PVRSRV_OK)
 	{
-		OSWriteHWReg(gpvOCPRegsLinAddr, EUR_CR_OCP_SYSCONFIG, 0x14);
+		/*
+		 * EUR_CR_OCP_SYSCONFIG (no-idle/no-standby, 0x14) is not written:
+		 * ti-sysc owns it, and no-standby keeps the GFX domain on (TI
+		 * dropped the write for its 1.14 Linux builds, 7a68236af992).
+		 */
 		OSWriteHWReg(gpvOCPRegsLinAddr, EUR_CR_OCP_DEBUG_CONFIG, EUR_CR_OCP_DEBUG_CONFIG_THALIA_INT_BYPASS_MASK);
 	}
 #endif
@@ -215,12 +219,12 @@ static PVRSRV_ERROR SysLocateDevices(SYS_DATA *psSysData)
 		SysSysPAddrToCpuPAddr(gsSGXDeviceMap.sRegsSysPBase);
 	PVR_TRACE(("SGX register base: 0x%lx", (unsigned long)gsSGXDeviceMap.sRegsCpuPBase.uiAddr));
 
-#if defined(SGX544) && defined(SGX_FEATURE_MP)
-	/* FIXME: Workaround due to HWMOD change. Otherwise this region is too small. */
-	gsSGXDeviceMap.ui32RegsSize = SYS_OMAP_SGX_REGS_SIZE;
-#else
-	gsSGXDeviceMap.ui32RegsSize = (unsigned int)(dev_res->end - dev_res->start);
-#endif
+	/*
+	 * The DT gives the whole 32 MiB L3 window of the SGX target module; the
+	 * registers (and the OCP wrapper at 0xfe00) are in the first 64 KiB.
+	 */
+	gsSGXDeviceMap.ui32RegsSize = min_t(unsigned int, resource_size(dev_res),
+					    SYS_OMAP_SGX_REGS_SIZE);
 	PVR_TRACE(("SGX register size: %d",gsSGXDeviceMap.ui32RegsSize));
 
 	gsSGXDeviceMap.ui32IRQ = dev_irq;
