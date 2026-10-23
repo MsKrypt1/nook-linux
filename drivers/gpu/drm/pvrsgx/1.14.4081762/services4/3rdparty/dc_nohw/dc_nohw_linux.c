@@ -113,9 +113,6 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 #define DRVNAME "dcnohw"
 
-#if !defined(SUPPORT_DRI_DRM)
-MODULE_SUPPORTED_DEVICE(DRVNAME);
-#endif
 
 #define unref__ __attribute__ ((unused))
 
@@ -237,10 +234,38 @@ DC_ERROR AllocDiscontigMemory(unsigned long ulSize,
 	unsigned long ulPage;
 	IMG_CPU_VIRTADDR LinAddr;
 
-	LinAddr = __vmalloc(ulSize, GFP_KERNEL | __GFP_HIGHMEM, pgprot_noncached(PAGE_KERNEL));
-	if (!LinAddr)
+	/*
+	 * __vmalloc() no longer takes a pgprot: vmap() the pages write-combined
+	 * (the DDK asked for uncached, which on ARM is strongly ordered). With
+	 * VM_MAP_PUT_PAGES, vfree() releases the pages and the array.
+	 */
 	{
-		return DC_ERROR_OUT_OF_MEMORY;
+		struct page **ppsPages = kvmalloc_array(ulPages, sizeof(*ppsPages), GFP_KERNEL);
+
+		if (!ppsPages)
+		{
+			return DC_ERROR_OUT_OF_MEMORY;
+		}
+		for (ulPage = 0; ulPage < ulPages; ulPage++)
+		{
+			ppsPages[ulPage] = alloc_page(GFP_KERNEL | __GFP_HIGHMEM | __GFP_ZERO);
+			if (!ppsPages[ulPage])
+			{
+				while (ulPage--)
+					__free_page(ppsPages[ulPage]);
+				kvfree(ppsPages);
+				return DC_ERROR_OUT_OF_MEMORY;
+			}
+		}
+		LinAddr = vmap(ppsPages, ulPages, VM_MAP | VM_MAP_PUT_PAGES,
+			       pgprot_writecombine(PAGE_KERNEL));
+		if (!LinAddr)
+		{
+			for (ulPage = 0; ulPage < ulPages; ulPage++)
+				__free_page(ppsPages[ulPage]);
+			kvfree(ppsPages);
+			return DC_ERROR_OUT_OF_MEMORY;
+		}
 	}
 
 	pPhysAddr = kmalloc(ulPages * sizeof(IMG_SYS_PHYADDR), GFP_KERNEL);

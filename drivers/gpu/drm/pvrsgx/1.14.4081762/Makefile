@@ -6,7 +6,7 @@
 # eurasiacon/build/linux2/kbuild/Makefile.template.
 #
 
-obj-$(CONFIG_SGX_OMAP4470) += pvrsrvkm_sgx544_112.o
+obj-$(CONFIG_SGX_OMAP4470) += pvrsrvkm_sgx544_112.o dcnohw.o
 
 ccflags-y += -D__linux__ -include $(src)/config_kernel.h \
 	-I$(src)/include4 \
@@ -78,3 +78,12 @@ pvrsrvkm_sgx544_112-y := \
 	services4/srvkm/devices/sgx/pb.o \
 	services4/system/omap/sysconfig.o \
 	services4/system/omap/sysutils.o
+
+# The DDK's no-hardware display class device (the Android gralloc needs one),
+# sized like the panel; width/height/depth are module parameters.
+ccflags-y += -DDC_NOHW_DISCONTIG_BUFFERS -DDC_NOHW_GET_BUFFER_DIMENSIONS \
+	-DDC_NOHW_BUFFER_WIDTH=1920 -DDC_NOHW_BUFFER_HEIGHT=1280
+
+dcnohw-y := \
+	services4/3rdparty/dc_nohw/dc_nohw_displayclass.o \
+	services4/3rdparty/dc_nohw/dc_nohw_linux.o
