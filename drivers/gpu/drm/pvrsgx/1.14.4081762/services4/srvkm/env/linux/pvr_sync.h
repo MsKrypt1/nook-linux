@@ -47,26 +47,24 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 /*
  * Mainline has no Android staging sync framework (sync_timeline, sync_pt,
- * sw_sync). pvr_sync.c is replaced by a minimal version on sync_file and
- * dma_fence: fences that user space passes in as dependencies are waited
- * for on the CPU before the work is queued, and the driver creates no
- * fences of its own (no /dev/pvr_sync, no display class timeline).
- * PVR_ANDROID_NATIVE_WINDOW_HAS_SYNC stays defined because it changes the
- * kick structures that user space fills in.
+ * sw_sync): pvr_sync.c implements /dev/pvr_sync on dma_fence and sync_file.
  */
 
-#include <linux/bug.h>
+#include <linux/dma-fence.h>
 #include <linux/types.h>
 
 #include "pvr_sync_user.h"
 #include "servicesint.h" // PVRSRV_DEVICE_SYNC_OBJECT
 
-/* Never instantiated: the replacement hands out no fences. */
+/*
+ * The display class code keeps the fences PVRSyncFencesToSyncInfos() hands
+ * out as struct sync_fence pointers; they are dma_fences.
+ */
 struct sync_fence;
 
 static inline void sync_fence_put(struct sync_fence *psFence)
 {
-	WARN_ON(psFence);
+	dma_fence_put((struct dma_fence *)psFence);
 }
 
 int PVRSyncDeviceInit(void);
