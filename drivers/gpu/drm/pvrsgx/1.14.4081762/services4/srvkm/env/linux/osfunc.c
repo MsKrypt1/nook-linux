@@ -40,6 +40,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 */ /**************************************************************************/
 
 #include <linux/version.h>
+#include <linux/stop_machine.h>
 
 #if (LINUX_VERSION_CODE < KERNEL_VERSION(2,6,38))
 #ifndef AUTOCONF_INCLUDED
@@ -4488,20 +4489,31 @@ static void per_cpu_cache_flush(void *arg)
 	flush_cache_all();
 }
 
+#if defined(CONFIG_OUTER_CACHE)
+static int pvr_outer_flush_all_stopped(void *pvData)
+{
+	PVR_UNREFERENCED_PARAMETER(pvData);
+	outer_flush_all();
+	return 0;
+}
+#endif
+
 /*
- * Whole outer cache clean+invalidate. The L2C code requires interrupts off
- * for it (l2c210_flush_all: BUG_ON(!irqs_disabled())). It also stands in for
- * a whole-cache clean: outer_clean_range(0, ULONG_MAX), which the DDK used,
- * no longer falls back to a whole-cache op and would walk 4 GiB line by line.
+ * Whole outer cache clean+invalidate. It also stands in for a whole-cache
+ * clean: outer_clean_range(0, ULONG_MAX), which the DDK used, no longer
+ * falls back to a whole-cache op and would walk 4 GiB line by line.
+ *
+ * The PL310 runs a by-way operation in the background and answers any
+ * other write to its maintenance registers meanwhile with SLVERR: the cache
+ * sync of every wmb() and the range operations of DMA mappings, on the other
+ * CPU, end in imprecise external aborts. Linux flushes the whole outer cache
+ * only with the other CPUs off; here they spin in stop_machine() with
+ * interrupts off (the L2C code also wants them off: l2c210_flush_all).
  */
 static void pvr_outer_flush_all(void)
 {
 #if defined(CONFIG_OUTER_CACHE)
-	unsigned long flags;
-
-	local_irq_save(flags);
-	outer_flush_all();
-	local_irq_restore(flags);
+	stop_machine(pvr_outer_flush_all_stopped, NULL, NULL);
 #endif
 }
 
