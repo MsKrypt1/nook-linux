@@ -3550,6 +3550,12 @@ static void dsi_enable(struct dsi_data *dsi)
 		goto err_get_dsi;
 
 	_dsi_initialize_irq(dsi);
+	/*
+	 * Errors latched before the interface went down (e.g. an HS TX
+	 * timeout while the video stream stopped) aren't this session's: the
+	 * first BTA would report them as its own.
+	 */
+	dsi_get_errors(dsi);
 
 	r = dsi_init_dsi(dsi);
 	if (r)
