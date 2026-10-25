@@ -705,7 +705,6 @@ PVRSyncIOCTLAlloc(struct PVR_SYNC_TIMELINE *psTimeline, void __user *pvData)
 {
 	struct PVR_ALLOC_SYNC_DATA *psAllocSyncData;
 	struct PVR_SYNC_ALLOC_IOCTL_DATA sData;
-	PVRSRV_SYNC_DATA *psSyncData;
 	struct file *psFile;
 	int iFd;
 
@@ -747,27 +746,16 @@ PVRSyncIOCTLAlloc(struct PVR_SYNC_TIMELINE *psTimeline, void __user *pvData)
 
 	sData.fence = iFd;
 
-	/* Check if this timeline looks idle. If there are still TQs running
-	 * on it, userspace shouldn't attempt any kind of power optimization
-	 * (e.g. it must not dummy-process GPU fences).
-	 *
-	 * Determining idleness here is safe because the ALLOC and CREATE
-	 * pvr_sync ioctls must be called under the gralloc module lock, so
-	 * we can't be creating another new fence op while we are still
-	 * processing this one.
-	 *
-	 * Take the bridge lock anyway so we can be sure that we read the
-	 * timeline sync's pending value coherently. The complete value may
-	 * be modified by the GPU, but worse-case we will decide we can't do
-	 * the power optimization and will still be correct.
+	/* Changed: the timeline is never reported idle. On an idle timeline
+	 * (no fence TQs running on it) user space may "dummy-process" the
+	 * fence: CREATE it from a sync info no kick has touched, a fence that
+	 * has signalled already, though the GPU may still be rendering. That
+	 * is safe on Android, where the display class flip waits for the
+	 * buffer's own sync info; a KMS flip has only the fence to wait for.
+	 * Not idle, user space kicks a fence TQ after the render, whose
+	 * completion signals the fence.
 	 */
-	LinuxLockMutexNested(&gPVRSRVLock, PVRSRV_LOCK_CLASS_BRIDGE);
-
-	psSyncData = psTimeline->psSyncInfo->psBase->psSyncData;
-	sData.bTimelineIdle =
-		psSyncData->ui32WriteOpsPending == psSyncData->ui32WriteOpsComplete;
-
-	LinuxUnLockMutex(&gPVRSRVLock);
+	sData.bTimelineIdle = IMG_FALSE;
 
 	if (copy_to_user(pvData, &sData, sizeof(sData)))
 	{
