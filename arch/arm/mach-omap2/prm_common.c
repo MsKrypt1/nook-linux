@@ -61,6 +61,9 @@ static struct irq_chip_generic **prcm_irq_chips;
  */
 static struct omap_prcm_irq_setup *prcm_irq_setup;
 
+/* PRCM event number of the I/O wake-up, -1 if none */
+static int prcm_io_event = -1;
+
 /* prm_base: base virtual address of the PRM IP block */
 struct omap_domain_base prm_base;
 
@@ -111,6 +114,7 @@ static void omap_prcm_irq_handler(struct irq_desc *desc)
 	struct irq_chip *chip = irq_desc_get_chip(desc);
 	unsigned int virtirq;
 	int nr_irq = prcm_irq_setup->nr_regs * 32;
+	bool io;
 
 	/*
 	 * If we are suspended, mask all interrupts from PRCM level,
@@ -138,6 +142,8 @@ static void omap_prcm_irq_handler(struct irq_desc *desc)
 		if (find_first_bit(pending, nr_irq) >= nr_irq)
 			break;
 
+		io = prcm_io_event >= 0 && test_bit(prcm_io_event, pending);
+
 		omap_prcm_events_filter_priority(pending, priority_pending);
 
 		/*
@@ -152,6 +158,21 @@ static void omap_prcm_irq_handler(struct irq_desc *desc)
 		/* Serve normal events next */
 		for_each_set_bit(virtirq, pending, nr_irq)
 			generic_handle_irq(prcm_irq_setup->base_irq + virtirq);
+
+		/*
+		 * A pad wake-up stays latched until the I/O daisy chain is
+		 * rearmed.  pinctrl-single rearms when it masks or unmasks one
+		 * of its wake-up interrupts, but a pad whose mux value enables
+		 * the wake-up statically has no interrupt there, and its latch
+		 * set in one suspend keeps CORE out of its low power state in
+		 * the next.  Rearm after every I/O event, as TI's kernel did
+		 * (omap4_trigger_ioctrl()), once all its handlers have read
+		 * their pads: the I/O interrupt is shared by the pinctrl-single
+		 * instances, and a rearm in one of them would clear the latch
+		 * that a later one is looking for.
+		 */
+		if (io && prcm_irq_setup->reconfigure_io_chain)
+			prcm_irq_setup->reconfigure_io_chain();
 	}
 	if (chip->irq_ack)
 		chip->irq_ack(&desc->irq_data);
@@ -341,6 +362,8 @@ int omap_prcm_register_chain_handler(struct omap_prcm_irq_setup *irq_setup)
 	}
 
 	irq = omap_prcm_event_to_irq("io");
+	if (irq > 0)
+		prcm_io_event = irq - irq_setup->base_irq;
 	omap_pcs_legacy_init(irq, irq_setup->reconfigure_io_chain);
 
 	return 0;
