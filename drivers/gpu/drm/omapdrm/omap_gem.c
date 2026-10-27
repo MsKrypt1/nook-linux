@@ -26,6 +26,7 @@
 /* note: we use upper 8 bits of flags for driver-internal flags: */
 #define OMAP_BO_MEM_DMA_API	0x01000000	/* memory allocated with the dma_alloc_* API */
 #define OMAP_BO_MEM_SHMEM	0x02000000	/* memory allocated through shmem backing */
+#define OMAP_BO_MEM_PIN_MMAP	0x04000000	/* pinned in the TILER since mapped by userspace */
 #define OMAP_BO_MEM_DMABUF	0x08000000	/* memory imported from a dmabuf */
 
 struct omap_gem_object {
@@ -468,7 +469,16 @@ static vm_fault_t omap_gem_fault_2d(struct drm_gem_object *obj,
 			pfn, pfn << PAGE_SHIFT);
 
 	for (i = n; i > 0; i--) {
-		ret = vmf_insert_mixed(vma, vaddr, pfn);
+		/*
+		 * Insert the slot's pages writable and dirty on a write fault:
+		 * otherwise the first write to each of them (one per row of a
+		 * buffer wider than a page) takes another fault to set the
+		 * dirty bit, every time the slot is mapped again.
+		 */
+		if (vmf->flags & FAULT_FLAG_WRITE)
+			ret = vmf_insert_mixed_mkwrite(vma, vaddr, pfn);
+		else
+			ret = vmf_insert_mixed(vma, vaddr, pfn);
 		if (ret & VM_FAULT_ERROR)
 			break;
 		pfn += priv->usergart[fmt].stride_pfn;
@@ -480,6 +490,57 @@ static vm_fault_t omap_gem_fault_2d(struct drm_gem_object *obj,
 				 % NUM_USERGART_ENTRIES;
 
 	return ret;
+}
+
+static int omap_gem_pin_locked(struct drm_gem_object *obj);
+
+/*
+ * A 2D scanout buffer whose rows are whole pages can be mapped through its
+ * own TILER block instead of the usergart: the usergart has two slots per
+ * format, each 4 KB wide and one slot high, so writing a 1280x1920 32-bit
+ * frame swapped them 120 times (~100 us each) and took twice as long as
+ * writing a linear buffer. Rows of whole pages keep every mapped page inside
+ * the buffer's own block.
+ */
+static bool omap_gem_can_map_pinned(struct drm_gem_object *obj)
+{
+	struct omap_drm_private *priv = obj->dev->dev_private;
+	struct omap_gem_object *omap_obj = to_omap_bo(obj);
+	enum tiler_fmt fmt = gem2fmt(omap_obj->flags);
+
+	return priv->has_dmm && (omap_obj->flags & OMAP_BO_SCANOUT) &&
+	       !((omap_obj->width << fmt) % PAGE_SIZE);
+}
+
+/*
+ * The buffer stays pinned from its first fault until it is freed, so its
+ * TILER address doesn't change while pages are mapped.
+ */
+static vm_fault_t omap_gem_fault_2d_pinned(struct drm_gem_object *obj,
+		struct vm_area_struct *vma, struct vm_fault *vmf)
+{
+	struct omap_gem_object *omap_obj = to_omap_bo(obj);
+	enum tiler_fmt fmt = gem2fmt(omap_obj->flags);
+	const int m = (omap_obj->width << fmt) >> PAGE_SHIFT;
+	pgoff_t pgoff = linear_page_delta(vma, vmf->address);
+	unsigned long pfn;
+	int err;
+
+	if (!(omap_obj->flags & OMAP_BO_MEM_PIN_MMAP)) {
+		err = omap_gem_pin_locked(obj);
+		if (err)
+			return vmf_error(err);
+		omap_obj->flags |= OMAP_BO_MEM_PIN_MMAP;
+		omap_gem_evict(obj);
+	}
+
+	/* the block's natural view: rows tiler_stride() apart */
+	pfn = (omap_obj->dma_addr >> PAGE_SHIFT) +
+	      (pgoff / m) * (tiler_stride(fmt, 0) >> PAGE_SHIFT) + pgoff % m;
+
+	if (vmf->flags & FAULT_FLAG_WRITE)
+		return vmf_insert_mixed_mkwrite(vma, vmf->address, pfn);
+	return vmf_insert_mixed(vma, vmf->address, pfn);
 }
 
 /**
@@ -520,7 +581,9 @@ static vm_fault_t omap_gem_fault(struct vm_fault *vmf)
 	 * probably trigger put_pages()?
 	 */
 
-	if (omap_obj->flags & OMAP_BO_TILED_MASK)
+	if ((omap_obj->flags & OMAP_BO_TILED_MASK) && omap_gem_can_map_pinned(obj))
+		ret = omap_gem_fault_2d_pinned(obj, vma, vmf);
+	else if (omap_obj->flags & OMAP_BO_TILED_MASK)
 		ret = omap_gem_fault_2d(obj, vma, vmf);
 	else
 		ret = omap_gem_fault_1d(obj, vma, vmf);
@@ -808,11 +871,31 @@ fail:
  */
 int omap_gem_pin(struct drm_gem_object *obj, dma_addr_t *dma_addr)
 {
+	struct omap_gem_object *omap_obj = to_omap_bo(obj);
+	int ret;
+
+	mutex_lock(&omap_obj->lock);
+
+	ret = omap_gem_pin_locked(obj);
+	if (!ret && dma_addr)
+		*dma_addr = omap_obj->dma_addr;
+
+	mutex_unlock(&omap_obj->lock);
+
+	return ret;
+}
+
+/**
+ * omap_gem_pin_locked() - Pin a GEM object in memory
+ * @obj: the GEM object
+ *
+ * omap_gem_pin() without locking.
+ */
+static int omap_gem_pin_locked(struct drm_gem_object *obj)
+{
 	struct omap_drm_private *priv = obj->dev->dev_private;
 	struct omap_gem_object *omap_obj = to_omap_bo(obj);
 	int ret = 0;
-
-	mutex_lock(&omap_obj->lock);
 
 	if (!omap_gem_is_contiguous(omap_obj)) {
 		if (refcount_read(&omap_obj->pin_cnt) == 0) {
@@ -821,25 +904,19 @@ int omap_gem_pin(struct drm_gem_object *obj, dma_addr_t *dma_addr)
 
 			ret = omap_gem_attach_pages(obj);
 			if (ret)
-				goto fail;
+				return ret;
 
 			if (omap_obj->flags & OMAP_BO_SCANOUT) {
 				if (priv->has_dmm) {
 					ret = omap_gem_pin_tiler(obj);
 					if (ret)
-						goto fail;
+						return ret;
 				}
 			}
 		} else {
 			refcount_inc(&omap_obj->pin_cnt);
 		}
 	}
-
-	if (dma_addr)
-		*dma_addr = omap_obj->dma_addr;
-
-fail:
-	mutex_unlock(&omap_obj->lock);
 
 	return ret;
 }
@@ -1215,6 +1292,10 @@ static void omap_gem_free_object(struct drm_gem_object *obj)
 	 * there can't be any lock contention.
 	 */
 	mutex_lock(&omap_obj->lock);
+
+	/* The pin taken by the first fault of a buffer mapped through its block */
+	if (omap_obj->flags & OMAP_BO_MEM_PIN_MMAP)
+		omap_gem_unpin_locked(obj);
 
 	/* The object should not be pinned. */
 	WARN_ON(refcount_read(&omap_obj->pin_cnt) > 0);
