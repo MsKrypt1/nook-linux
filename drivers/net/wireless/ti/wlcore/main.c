@@ -2943,7 +2943,10 @@ static int wlcore_join(struct wl1271 *wl, struct wl12xx_vif *wlvif)
 	 * authentication goes unacked. Start and stop a dummy role first.
 	 * Only once per boot: a dummy start on each join made the firmware
 	 * fail the start with CMD_STATUS_WRONG_NESTING when it reconnected
-	 * after a beacon loss.
+	 * after a beacon loss. A real start right after the dummy stop
+	 * fails again one time in five, so give the firmware time first
+	 * (10 ms was enough; waiting for its role stop event instead stalled
+	 * its TX path).
 	 */
 	if ((wl->quirks & WLCORE_QUIRK_START_STA_FAILS) && !wl->sta_started) {
 		ret = wl12xx_cmd_role_start_sta(wl, wlvif);
@@ -2953,6 +2956,8 @@ static int wlcore_join(struct wl1271 *wl, struct wl12xx_vif *wlvif)
 		ret = wl12xx_cmd_role_stop_sta(wl, wlvif);
 		if (ret < 0)
 			return ret;
+
+		msleep(30);
 	}
 
 	ret = wl12xx_cmd_role_start_sta(wl, wlvif);
