@@ -2046,6 +2046,7 @@ static void wlcore_op_stop_locked(struct wl1271 *wl)
 	memset(wl->links_map, 0, sizeof(wl->links_map));
 	memset(wl->roc_map, 0, sizeof(wl->roc_map));
 	memset(wl->session_ids, 0, sizeof(wl->session_ids));
+	wl->sta_started = false;
 	memset(wl->rx_filter_enabled, 0, sizeof(wl->rx_filter_enabled));
 	wl->active_sta_count = 0;
 	wl->active_link_count = 0;
@@ -2934,9 +2935,29 @@ static int wlcore_join(struct wl1271 *wl, struct wl12xx_vif *wlvif)
 	wlvif->encryption_type = KEY_NONE;
 
 	if (is_ibss)
-		ret = wl12xx_cmd_role_start_ibss(wl, wlvif);
-	else
+		return wl12xx_cmd_role_start_ibss(wl, wlvif);
+
+	/*
+	 * The wl127x firmware (up to 6.3.10.0.142) doesn't rx/tx on the
+	 * first STA role it starts after booting: every frame of the first
+	 * authentication goes unacked. Start and stop a dummy role first.
+	 * Only once per boot: a dummy start on each join made the firmware
+	 * fail the start with CMD_STATUS_WRONG_NESTING when it reconnected
+	 * after a beacon loss.
+	 */
+	if ((wl->quirks & WLCORE_QUIRK_START_STA_FAILS) && !wl->sta_started) {
 		ret = wl12xx_cmd_role_start_sta(wl, wlvif);
+		if (ret < 0)
+			return ret;
+
+		ret = wl12xx_cmd_role_stop_sta(wl, wlvif);
+		if (ret < 0)
+			return ret;
+	}
+
+	ret = wl12xx_cmd_role_start_sta(wl, wlvif);
+	if (!ret)
+		wl->sta_started = true;
 
 	return ret;
 }

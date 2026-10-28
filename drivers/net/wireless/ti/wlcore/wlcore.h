@@ -234,6 +234,9 @@ struct wl1271 {
 
 	u8 session_ids[WLCORE_MAX_LINKS];
 
+	/* a STA role was started since the firmware booted */
+	bool sta_started;
+
 	struct list_head wlvif_list;
 
 	u8 sta_count;
@@ -546,6 +549,9 @@ wlcore_set_min_fw_ver(struct wl1271 *wl, unsigned int chip,
 
 /* Each RX/TX transaction requires an end-of-transaction transfer */
 #define WLCORE_QUIRK_END_OF_TRANSACTION		BIT(0)
+
+/* the first STA role started after a firmware boot doesn't rx/tx (wl127x) */
+#define WLCORE_QUIRK_START_STA_FAILS		BIT(1)
 
 /* wl127x and SPI don't support SDIO block size alignment */
 #define WLCORE_QUIRK_TX_BLOCKSIZE_ALIGN		BIT(2)
