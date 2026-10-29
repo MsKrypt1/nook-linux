@@ -135,13 +135,21 @@ static void ion_compat_detach(struct dma_buf *dmabuf,
 	kfree(a);
 }
 
+/*
+ * Importers map without cache maintenance: the buffer was written back when it
+ * was allocated, and the CPU's accesses sync through the hooks below,
+ * ION_IOC_SYNC or the SGX driver's own cache operations (gralloc's lock and
+ * unlock). pvrsrvkm and omapdrm map a buffer once for its life, at import and
+ * free, where a sync was one more pass over the whole buffer, line by line in
+ * L1 and L2 (~40 ms for a 27 MB texture).
+ */
 static struct sg_table *ion_compat_map_dma_buf(struct dma_buf_attachment *attachment,
 					       enum dma_data_direction dir)
 {
 	struct ion_compat_attachment *a = attachment->priv;
 	int ret;
 
-	ret = dma_map_sgtable(attachment->dev, &a->sgt, dir, 0);
+	ret = dma_map_sgtable(attachment->dev, &a->sgt, dir, DMA_ATTR_SKIP_CPU_SYNC);
 	if (ret)
 		return ERR_PTR(ret);
 	a->mapped = true;
@@ -155,7 +163,7 @@ static void ion_compat_unmap_dma_buf(struct dma_buf_attachment *attachment,
 	struct ion_compat_attachment *a = attachment->priv;
 
 	a->mapped = false;
-	dma_unmap_sgtable(attachment->dev, sgt, dir, 0);
+	dma_unmap_sgtable(attachment->dev, sgt, dir, DMA_ATTR_SKIP_CPU_SYNC);
 }
 
 /*
@@ -261,8 +269,9 @@ static void ion_compat_release(struct dma_buf *dmabuf)
 		WARN(1, "%s: buffer still mapped in the kernel\n", __func__);
 		vunmap(buf->vaddr);
 	}
+	/* the pages are freed: nothing to sync */
 	dma_unmap_sgtable(ion_compat_dev.this_device, &buf->sgt,
-			  DMA_BIDIRECTIONAL, 0);
+			  DMA_BIDIRECTIONAL, DMA_ATTR_SKIP_CPU_SYNC);
 	sg_free_table(&buf->sgt);
 	ion_compat_free_pages(buf);
 	kfree(buf);
