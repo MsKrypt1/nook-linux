@@ -937,7 +937,8 @@ static void omap_gem_unpin_locked(struct drm_gem_object *obj)
 		return;
 
 	if (refcount_dec_and_test(&omap_obj->pin_cnt)) {
-		if (omap_obj->sgt) {
+		/* An imported buffer's sg table belongs to its attachment */
+		if (omap_obj->sgt && !(omap_obj->flags & OMAP_BO_MEM_DMABUF)) {
 			sg_free_table(omap_obj->sgt);
 			kfree(omap_obj->sgt);
 			omap_obj->sgt = NULL;
@@ -1515,6 +1516,9 @@ struct drm_gem_object *omap_gem_new_dmabuf(struct drm_device *dev, size_t size,
 			omap_gem_free_object(obj);
 			return ERR_PTR(-ENOMEM);
 		}
+
+		/* The DSS sees it through a TILER 1D mapping while pinned */
+		omap_obj->flags |= OMAP_BO_SCANOUT;
 	}
 
 	return obj;

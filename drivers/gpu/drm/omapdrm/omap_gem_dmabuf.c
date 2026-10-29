@@ -133,6 +133,12 @@ struct drm_gem_object *omap_gem_prime_import(struct drm_device *dev,
 	}
 
 	obj->import_attach = attach;
+	/*
+	 * Share the exporter's reservation object, as drm_gem_prime_import_dev()
+	 * does: the plane's prepare_fb then waits for the fences that the
+	 * producer (or DMA_BUF_IOCTL_IMPORT_SYNC_FILE) put there.
+	 */
+	obj->resv = dma_buf->resv;
 
 	return obj;
 
