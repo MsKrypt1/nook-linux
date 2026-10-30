@@ -317,8 +317,15 @@ static struct dma_buf *ion_compat_alloc(size_t len, unsigned int heap_id_mask,
 		ret = -ENOMEM;
 		goto err_free_buf;
 	}
+	/*
+	 * From lowmem: these pages are pinned for the buffer's life, and gralloc
+	 * buffers can fill the 32-bit highmem zone (254 MB on the Nook HD+),
+	 * which then sits at its watermark and wakes kswapd at every new buffer
+	 * while lowmem has hundreds of MB free. Highmem is left to user pages,
+	 * which can move.
+	 */
 	for (i = 0; i < buf->npages; i++) {
-		buf->pages[i] = alloc_page(GFP_HIGHUSER | __GFP_ZERO);
+		buf->pages[i] = alloc_page(GFP_USER | __GFP_ZERO);
 		if (!buf->pages[i]) {
 			ret = -ENOMEM;
 			goto err_free_pages;
