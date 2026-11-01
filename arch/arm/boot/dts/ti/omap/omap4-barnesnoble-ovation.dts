@@ -681,6 +681,11 @@
 		pwm-names = "lp8556";
 		dev-ctrl = [02];
 		init-brt = [3f];
+		/*
+		 * A log curve over the levels (Phosh's, for a scale it doesn't
+		 * know) puts half of a slider at level 21, barely visible here.
+		 */
+		ti,brightness-non-linear;
 
 		rom-a4h {
 			rom-addr = [a4];

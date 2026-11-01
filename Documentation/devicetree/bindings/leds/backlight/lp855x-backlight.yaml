@@ -36,6 +36,13 @@ properties:
     $ref: /schemas/types.yaml#/definitions/uint8
     description: Initial value of backlight brightness.
 
+  ti,brightness-non-linear:
+    type: boolean
+    description:
+      The brightness levels are not linear in the panel's luminance. The
+      backlight's scale is then reported as non-linear, so user space maps
+      its brightness control to the levels linearly.
+
   power-supply:
     description: Regulator which controls the 3V rail.
 

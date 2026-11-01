@@ -14,6 +14,7 @@
 #include <linux/err.h>
 #include <linux/of.h>
 #include <linux/platform_data/lp855x.h>
+#include <linux/property.h>
 #include <linux/pwm.h>
 #include <linux/regulator/consumer.h>
 
@@ -278,6 +279,14 @@ static int lp855x_backlight_register(struct lp855x *lp)
 		pdata->initial_brightness = props.max_brightness;
 
 	props.brightness = pdata->initial_brightness;
+
+	/*
+	 * Where the levels are not linear in the panel's luminance, say so:
+	 * user space then maps its brightness slider to them linearly instead
+	 * of putting its own (logarithmic) curve over them.
+	 */
+	if (device_property_read_bool(lp->dev, "ti,brightness-non-linear"))
+		props.scale = BACKLIGHT_SCALE_NON_LINEAR;
 
 	bl = devm_backlight_device_register(lp->dev, name, lp->dev, lp,
 				       &lp855x_bl_ops, &props);
