@@ -87,10 +87,33 @@ typedef struct PVRSRV_LINUX_EVENT_OBJECT_LIST_TAG
 } PVRSRV_LINUX_EVENT_OBJECT_LIST;
 
 
+/*
+ * The services client opens one event object per connection and waits on it
+ * from every thread that needs the GPU (e.g. a GL thread and the driver's own
+ * helper thread), after finding its condition unmet. A wait returns once the
+ * object was signalled since the waiter's last wait; with one "previous" stamp
+ * per object, the first thread to wake consumed a signal for all of them, and
+ * the others slept on until EVENT_OBJECT_TIMEOUT_MS (100 ms) though their
+ * condition had been met. So the stamp seen last is kept per thread, for up
+ * to PVR_EVENT_WAITERS threads (least recently used one replaced).
+ */
+#define PVR_EVENT_WAITERS	8
+
+typedef struct PVR_EVENT_WAITER_TAG
+{
+	pid_t		iTid;		/* 0: free */
+	IMG_UINT32	ui32TimeStampPrevious;
+	unsigned long	ulLastUse;	/* jiffies */
+} PVR_EVENT_WAITER;
+
 typedef struct PVRSRV_LINUX_EVENT_OBJECT_TAG
 {
    	atomic_t	sTimeStamp;
+	/* the stamp the last wait of any thread returned with: for a thread
+	 * not in asWaiters yet */
    	IMG_UINT32  ui32TimeStampPrevious;
+	spinlock_t	sWaitersLock;
+	PVR_EVENT_WAITER asWaiters[PVR_EVENT_WAITERS];
 #if defined(DEBUG)
 	IMG_UINT	ui32Stats;
 #endif
@@ -293,6 +316,8 @@ PVRSRV_ERROR LinuxEventObjectAdd(IMG_HANDLE hOSEventObjectList, IMG_HANDLE *phOS
 
 	atomic_set(&psLinuxEventObject->sTimeStamp, 0);
 	psLinuxEventObject->ui32TimeStampPrevious = 0;
+	spin_lock_init(&psLinuxEventObject->sWaitersLock);
+	memset(psLinuxEventObject->asWaiters, 0, sizeof(psLinuxEventObject->asWaiters));
 
 #if defined(DEBUG)
 	psLinuxEventObject->ui32Stats = 0;
@@ -357,6 +382,63 @@ PVRSRV_ERROR LinuxEventObjectSignal(IMG_HANDLE hOSEventObjectList)
   	
 }
 
+/* The stamp the calling thread's last wait on the object returned with */
+static IMG_UINT32 LinuxEventObjectWaiterPrevious(PVRSRV_LINUX_EVENT_OBJECT *psObj)
+{
+	IMG_UINT32 ui32Previous;
+	unsigned long ulFlags;
+	int i;
+
+	spin_lock_irqsave(&psObj->sWaitersLock, ulFlags);
+	ui32Previous = psObj->ui32TimeStampPrevious;
+	for (i = 0; i < PVR_EVENT_WAITERS; i++)
+	{
+		if (psObj->asWaiters[i].iTid == current->pid)
+		{
+			ui32Previous = psObj->asWaiters[i].ui32TimeStampPrevious;
+			break;
+		}
+	}
+	spin_unlock_irqrestore(&psObj->sWaitersLock, ulFlags);
+
+	return ui32Previous;
+}
+
+/* Records the stamp the calling thread's wait returned with */
+static IMG_VOID LinuxEventObjectWaiterSeen(PVRSRV_LINUX_EVENT_OBJECT *psObj, IMG_UINT32 ui32TimeStamp)
+{
+	PVR_EVENT_WAITER *psWaiter = IMG_NULL, *psVictim = IMG_NULL;
+	unsigned long ulFlags;
+	int i;
+
+	spin_lock_irqsave(&psObj->sWaitersLock, ulFlags);
+	psObj->ui32TimeStampPrevious = ui32TimeStamp;
+	for (i = 0; i < PVR_EVENT_WAITERS; i++)
+	{
+		PVR_EVENT_WAITER *psEntry = &psObj->asWaiters[i];
+
+		if (psEntry->iTid == current->pid)
+		{
+			psWaiter = psEntry;
+			break;
+		}
+		/* a free entry, else the least recently used one */
+		if (!psVictim || (psVictim->iTid &&
+			(!psEntry->iTid || time_before(psEntry->ulLastUse, psVictim->ulLastUse))))
+		{
+			psVictim = psEntry;
+		}
+	}
+	if (!psWaiter)
+	{
+		psWaiter = psVictim;
+		psWaiter->iTid = current->pid;
+	}
+	psWaiter->ui32TimeStampPrevious = ui32TimeStamp;
+	psWaiter->ulLastUse = jiffies;
+	spin_unlock_irqrestore(&psObj->sWaitersLock, ulFlags);
+}
+
 /*!
 ******************************************************************************
 
@@ -375,19 +457,21 @@ PVRSRV_ERROR LinuxEventObjectSignal(IMG_HANDLE hOSEventObjectList)
 ******************************************************************************/
 PVRSRV_ERROR LinuxEventObjectWait(IMG_HANDLE hOSEventObject, IMG_UINT32 ui32MSTimeout)
 {
-	IMG_UINT32 ui32TimeStamp;
+	IMG_UINT32 ui32TimeStamp, ui32TimeStampPrevious;
 	DEFINE_WAIT(sWait);
 
 	PVRSRV_LINUX_EVENT_OBJECT *psLinuxEventObject = (PVRSRV_LINUX_EVENT_OBJECT *) hOSEventObject;
 
 	IMG_UINT32 ui32TimeOutJiffies = msecs_to_jiffies(ui32MSTimeout);
+
+	ui32TimeStampPrevious = LinuxEventObjectWaiterPrevious(psLinuxEventObject);
 	
 	do	
 	{
 		prepare_to_wait(&psLinuxEventObject->sWait, &sWait, TASK_INTERRUPTIBLE);
 		ui32TimeStamp = (IMG_UINT32)atomic_read(&psLinuxEventObject->sTimeStamp);
    	
-		if(psLinuxEventObject->ui32TimeStampPrevious != ui32TimeStamp)
+		if(ui32TimeStampPrevious != ui32TimeStamp)
 		{
 			break;
 		}
@@ -406,7 +490,7 @@ PVRSRV_ERROR LinuxEventObjectWait(IMG_HANDLE hOSEventObject, IMG_UINT32 ui32MSTi
 
 	finish_wait(&psLinuxEventObject->sWait, &sWait);	
 
-	psLinuxEventObject->ui32TimeStampPrevious = ui32TimeStamp;
+	LinuxEventObjectWaiterSeen(psLinuxEventObject, ui32TimeStamp);
 
 	return ui32TimeOutJiffies ? PVRSRV_OK : PVRSRV_ERROR_TIMEOUT;
 
