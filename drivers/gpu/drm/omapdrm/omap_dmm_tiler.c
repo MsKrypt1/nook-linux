@@ -518,11 +518,13 @@ int tiler_pin(struct tiler_block *block, struct page **pages,
 
 	return ret;
 }
+EXPORT_SYMBOL_GPL(tiler_pin);
 
 int tiler_unpin(struct tiler_block *block)
 {
 	return fill(&block->area, NULL, 0, 0, false);
 }
+EXPORT_SYMBOL_GPL(tiler_unpin);
 
 /*
  * Reserve/release
@@ -568,6 +570,7 @@ struct tiler_block *tiler_reserve_2d(enum tiler_fmt fmt, u16 w,
 
 	return block;
 }
+EXPORT_SYMBOL_GPL(tiler_reserve_2d);
 
 struct tiler_block *tiler_reserve_1d(size_t size)
 {
@@ -592,6 +595,7 @@ struct tiler_block *tiler_reserve_1d(size_t size)
 
 	return block;
 }
+EXPORT_SYMBOL_GPL(tiler_reserve_1d);
 
 /* note: if you have pin'd pages, you should have already unpin'd first! */
 int tiler_release(struct tiler_block *block)
@@ -609,6 +613,7 @@ int tiler_release(struct tiler_block *block)
 	kfree(block);
 	return ret;
 }
+EXPORT_SYMBOL_GPL(tiler_release);
 
 /*
  * Utils
@@ -674,6 +679,7 @@ dma_addr_t tiler_ssptr(struct tiler_block *block)
 			block->area.p0.x * geom[block->fmt].slot_w,
 			block->area.p0.y * geom[block->fmt].slot_h);
 }
+EXPORT_SYMBOL_GPL(tiler_ssptr);
 
 dma_addr_t tiler_tsptr(struct tiler_block *block, u32 orient,
 		u32 x, u32 y)
@@ -692,6 +698,7 @@ void tiler_align(enum tiler_fmt fmt, u16 *w, u16 *h)
 	*w = round_up(*w, geom[fmt].slot_w);
 	*h = round_up(*h, geom[fmt].slot_h);
 }
+EXPORT_SYMBOL_GPL(tiler_align);
 
 u32 tiler_stride(enum tiler_fmt fmt, u32 orient)
 {
@@ -702,12 +709,14 @@ u32 tiler_stride(enum tiler_fmt fmt, u32 orient)
 	else
 		return 1 << (CONT_WIDTH_BITS + geom[fmt].y_shft);
 }
+EXPORT_SYMBOL_GPL(tiler_stride);
 
 size_t tiler_size(enum tiler_fmt fmt, u16 w, u16 h)
 {
 	tiler_align(fmt, &w, &h);
 	return geom[fmt].cpp * w * h;
 }
+EXPORT_SYMBOL_GPL(tiler_size);
 
 size_t tiler_vsize(enum tiler_fmt fmt, u16 w, u16 h)
 {
@@ -724,6 +733,7 @@ bool dmm_is_available(void)
 {
 	return omap_dmm ? true : false;
 }
+EXPORT_SYMBOL_GPL(dmm_is_available);
 
 static void omap_dmm_remove(struct platform_device *dev)
 {

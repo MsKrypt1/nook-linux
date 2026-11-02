@@ -47,6 +47,9 @@
  * @endpoints:	idr of local endpoints, allows fast retrieval
  * @endpoints_lock: lock of the endpoints set
  * @sendq:	wait queue of sending contexts waiting for a tx buffers
+ * @ti_legacy:	the remote speaks TI's pre-upstream rpmsg (VIRTIO_RPMSG_F_TI_LEGACY)
+ * @send_lock:	TI legacy only: one sender at a time, from taking a tx buffer
+ *		to the kick
  *
  * This structure stores the rpmsg state of a given virtio remote processor
  * device (there might be several virtio proc devices for each physical
@@ -64,6 +67,8 @@ struct virtproc_info {
 	struct idr endpoints;
 	struct mutex endpoints_lock;
 	wait_queue_head_t sendq;
+	bool ti_legacy;
+	struct mutex send_lock;
 };
 
 /* The feature bitmap for virtio rpmsg */
@@ -89,6 +94,67 @@ struct rpmsg_hdr {
 	u8 data[];
 } __packed;
 
+/*
+ * struct rpmsg_hdr_ti - the header of TI's pre-upstream rpmsg
+ * (VIRTIO_RPMSG_F_TI_LEGACY): the same fields and size as struct rpmsg_hdr,
+ * in another order.
+ */
+struct rpmsg_hdr_ti {
+	__rpmsg16 len;
+	__rpmsg16 flags;
+	__rpmsg32 src;
+	__rpmsg32 dst;
+	__rpmsg32 reserved;
+	u8 data[];
+} __packed;
+
+static_assert(sizeof(struct rpmsg_hdr_ti) == sizeof(struct rpmsg_hdr));
+static_assert(offsetof(struct rpmsg_hdr_ti, data) ==
+	      offsetof(struct rpmsg_hdr, data));
+
+static void rpmsg_hdr_set(struct virtproc_info *vrp, struct rpmsg_hdr *msg,
+			  u32 src, u32 dst, u16 len)
+{
+	bool le = virtio_is_little_endian(vrp->vdev);
+
+	if (vrp->ti_legacy) {
+		struct rpmsg_hdr_ti *tmsg = (struct rpmsg_hdr_ti *)msg;
+
+		tmsg->len = __cpu_to_rpmsg16(le, len);
+		tmsg->flags = 0;
+		tmsg->src = __cpu_to_rpmsg32(le, src);
+		tmsg->dst = __cpu_to_rpmsg32(le, dst);
+		tmsg->reserved = 0;
+		return;
+	}
+
+	msg->len = __cpu_to_rpmsg16(le, len);
+	msg->flags = 0;
+	msg->src = __cpu_to_rpmsg32(le, src);
+	msg->dst = __cpu_to_rpmsg32(le, dst);
+	msg->reserved = 0;
+}
+
+static void rpmsg_hdr_get(struct virtproc_info *vrp, struct rpmsg_hdr *msg,
+			  u32 *src, u32 *dst, u16 *len, u16 *flags)
+{
+	bool le = virtio_is_little_endian(vrp->vdev);
+
+	if (vrp->ti_legacy) {
+		struct rpmsg_hdr_ti *tmsg = (struct rpmsg_hdr_ti *)msg;
+
+		*src = __rpmsg32_to_cpu(le, tmsg->src);
+		*dst = __rpmsg32_to_cpu(le, tmsg->dst);
+		*len = __rpmsg16_to_cpu(le, tmsg->len);
+		*flags = __rpmsg16_to_cpu(le, tmsg->flags);
+		return;
+	}
+
+	*src = __rpmsg32_to_cpu(le, msg->src);
+	*dst = __rpmsg32_to_cpu(le, msg->dst);
+	*len = __rpmsg16_to_cpu(le, msg->len);
+	*flags = __rpmsg16_to_cpu(le, msg->flags);
+}
 
 /**
  * struct virtio_rpmsg_channel - rpmsg channel descriptor
@@ -455,7 +521,7 @@ static void *get_a_tx_buf(struct virtproc_info *vrp)
 }
 
 /**
- * rpmsg_send_offchannel_raw() - send a message across to the remote processor
+ * __rpmsg_send_offchannel_raw() - send a message across to the remote processor
  * @rpdev: the rpmsg channel
  * @src: source address
  * @dst: destination address
@@ -488,9 +554,9 @@ static void *get_a_tx_buf(struct virtproc_info *vrp)
  *
  * Return: 0 on success and an appropriate error value on failure.
  */
-static int rpmsg_send_offchannel_raw(struct rpmsg_device *rpdev,
-				     u32 src, u32 dst,
-				     const void *data, int len, bool wait)
+static int __rpmsg_send_offchannel_raw(struct rpmsg_device *rpdev,
+				       u32 src, u32 dst,
+				       const void *data, int len, bool wait)
 {
 	struct virtio_rpmsg_channel *vch = to_virtio_rpmsg_channel(rpdev);
 	struct virtproc_info *vrp = vch->vrp;
@@ -543,15 +609,10 @@ static int rpmsg_send_offchannel_raw(struct rpmsg_device *rpdev,
 		}
 	}
 
-	msg->len = cpu_to_rpmsg16(rpdev, len);
-	msg->flags = 0;
-	msg->src = cpu_to_rpmsg32(rpdev, src);
-	msg->dst = cpu_to_rpmsg32(rpdev, dst);
-	msg->reserved = 0;
+	rpmsg_hdr_set(vrp, msg, src, dst, len);
 	memcpy(msg->data, data, len);
 
-	dev_dbg(dev, "TX From 0x%x, To 0x%x, Len %d, Flags %d, Reserved %d\n",
-		src, dst, len, msg->flags, msg->reserved);
+	dev_dbg(dev, "TX From 0x%x, To 0x%x, Len %d\n", src, dst, len);
 #if defined(CONFIG_DYNAMIC_DEBUG)
 	dynamic_hex_dump("rpmsg_virtio TX: ", DUMP_PREFIX_NONE, 16, 1,
 			 msg, sizeof(*msg) + len, true);
@@ -577,6 +638,32 @@ static int rpmsg_send_offchannel_raw(struct rpmsg_device *rpdev,
 	virtqueue_kick(vrp->svq);
 out:
 	mutex_unlock(&vrp->tx_lock);
+	return err;
+}
+
+/*
+ * TI's pre-upstream firmware can take an avail ring entry as it was before
+ * the host's last write to it: then it runs the older message of the
+ * descriptor that entry held, and the new one is lost (seen with two senders
+ * at once, a few in a thousand messages). With one sender at a time from
+ * taking a tx buffer to adding it, the descriptor freed with the buffer is
+ * the one added again, into the entry it came from (the firmware uses them
+ * in order): every entry keeps its descriptor and such a read does no harm.
+ */
+static int rpmsg_send_offchannel_raw(struct rpmsg_device *rpdev,
+				     u32 src, u32 dst,
+				     const void *data, int len, bool wait)
+{
+	struct virtproc_info *vrp = to_virtio_rpmsg_channel(rpdev)->vrp;
+	int err;
+
+	if (!vrp->ti_legacy)
+		return __rpmsg_send_offchannel_raw(rpdev, src, dst, data, len,
+						   wait);
+
+	mutex_lock(&vrp->send_lock);
+	err = __rpmsg_send_offchannel_raw(rpdev, src, dst, data, len, wait);
+	mutex_unlock(&vrp->send_lock);
 	return err;
 }
 
@@ -656,15 +743,16 @@ static int rpmsg_recv_single(struct virtproc_info *vrp, struct device *dev,
 {
 	struct rpmsg_endpoint *ept;
 	struct scatterlist sg;
-	bool little_endian = virtio_is_little_endian(vrp->vdev);
-	unsigned int msg_len = __rpmsg16_to_cpu(little_endian, msg->len);
+	unsigned int msg_len;
+	u32 msg_src, msg_dst;
+	u16 hdr_len, hdr_flags;
 	int err;
 
-	dev_dbg(dev, "From: 0x%x, To: 0x%x, Len: %d, Flags: %d, Reserved: %d\n",
-		__rpmsg32_to_cpu(little_endian, msg->src),
-		__rpmsg32_to_cpu(little_endian, msg->dst), msg_len,
-		__rpmsg16_to_cpu(little_endian, msg->flags),
-		__rpmsg32_to_cpu(little_endian, msg->reserved));
+	rpmsg_hdr_get(vrp, msg, &msg_src, &msg_dst, &hdr_len, &hdr_flags);
+	msg_len = hdr_len;
+
+	dev_dbg(dev, "From: 0x%x, To: 0x%x, Len: %d, Flags: %d\n",
+		msg_src, msg_dst, msg_len, hdr_flags);
 #if defined(CONFIG_DYNAMIC_DEBUG)
 	dynamic_hex_dump("rpmsg_virtio RX: ", DUMP_PREFIX_NONE, 16, 1,
 			 msg, sizeof(*msg) + msg_len, true);
@@ -683,7 +771,7 @@ static int rpmsg_recv_single(struct virtproc_info *vrp, struct device *dev,
 	/* use the dst addr to fetch the callback of the appropriate user */
 	mutex_lock(&vrp->endpoints_lock);
 
-	ept = idr_find(&vrp->endpoints, __rpmsg32_to_cpu(little_endian, msg->dst));
+	ept = idr_find(&vrp->endpoints, msg_dst);
 
 	/* let's make sure no one deallocates ept while we use it */
 	if (ept)
@@ -697,7 +785,7 @@ static int rpmsg_recv_single(struct virtproc_info *vrp, struct device *dev,
 
 		if (ept->cb)
 			ept->cb(ept->rpdev, msg->data, msg_len, ept->priv,
-				__rpmsg32_to_cpu(little_endian, msg->src));
+				msg_src);
 
 		mutex_unlock(&ept->cb_lock);
 
@@ -835,6 +923,7 @@ static int rpmsg_probe(struct virtio_device *vdev)
 	idr_init(&vrp->endpoints);
 	mutex_init(&vrp->endpoints_lock);
 	mutex_init(&vrp->tx_lock);
+	mutex_init(&vrp->send_lock);
 	init_waitqueue_head(&vrp->sendq);
 
 	/* We expect two virtqueues, rx and tx (and in this order) */
@@ -844,6 +933,7 @@ static int rpmsg_probe(struct virtio_device *vdev)
 
 	vrp->rvq = vqs[0];
 	vrp->svq = vqs[1];
+	vrp->ti_legacy = virtio_has_feature(vdev, VIRTIO_RPMSG_F_TI_LEGACY);
 
 	/* we expect symmetric tx/rx vrings */
 	WARN_ON(virtqueue_get_vring_size(vrp->rvq) !=
@@ -923,6 +1013,21 @@ static int rpmsg_probe(struct virtio_device *vdev)
 	}
 
 	/*
+	 * TI's pre-upstream firmware sends its resource requests to a host
+	 * service it does not wait to be announced: create that channel.
+	 */
+	if (vrp->ti_legacy) {
+		struct rpmsg_channel_info chinfo = {
+			.name = "rpmsg-resmgr",
+			.src = RPMSG_TI_RESMGR_ADDR,
+			.dst = RPMSG_ADDR_ANY,
+		};
+
+		if (!__rpmsg_create_channel(vrp, &chinfo))
+			dev_err(&vdev->dev, "can't create the resmgr channel\n");
+	}
+
+	/*
 	 * Prepare to kick but don't notify yet - we can't do this before
 	 * device is ready.
 	 */
@@ -991,6 +1096,7 @@ static struct virtio_device_id id_table[] = {
 
 static unsigned int features[] = {
 	VIRTIO_RPMSG_F_NS,
+	VIRTIO_RPMSG_F_TI_LEGACY,
 };
 
 static struct virtio_driver virtio_ipc_driver = {

@@ -334,6 +334,8 @@ static void omap_timer_save_context(struct dmtimer *timer)
 	timer->context.ocp_cfg = dmtimer_read(timer, OMAP_TIMER_OCP_CFG_OFFSET);
 
 	timer->context.tclr = dmtimer_read(timer, OMAP_TIMER_CTRL_REG);
+	/* a restored timer continues from where it was, not from 0 */
+	timer->context.tcrr = dmtimer_read(timer, OMAP_TIMER_COUNTER_REG);
 	timer->context.twer = dmtimer_read(timer, OMAP_TIMER_WAKEUP_EN_REG);
 	timer->context.tldr = dmtimer_read(timer, OMAP_TIMER_LOAD_REG);
 	timer->context.tmar = dmtimer_read(timer, OMAP_TIMER_MATCH_REG);
@@ -1197,7 +1199,15 @@ static int __maybe_unused omap_dm_timer_runtime_resume(struct device *dev)
 	return 0;
 }
 
+/*
+ * The timers' power domain may lose context in system suspend (OMAP4 L4PER
+ * OSWR) while a user still holds them: a remote processor's tick timers,
+ * which omap_remoteproc stops in its suspend, after the PM core has blocked
+ * runtime suspend. Save and restore them through the runtime PM callbacks.
+ */
 static const struct dev_pm_ops omap_dm_timer_pm_ops = {
+	SET_LATE_SYSTEM_SLEEP_PM_OPS(pm_runtime_force_suspend,
+				     pm_runtime_force_resume)
 	SET_RUNTIME_PM_OPS(omap_dm_timer_runtime_suspend,
 			   omap_dm_timer_runtime_resume, NULL)
 };
@@ -1466,7 +1476,18 @@ static int omap_dm_timer_probe(struct platform_device *pdev)
 		timer->fclk = ERR_PTR(-ENODEV);
 	}
 
-	if (!(timer->capability & OMAP_TIMER_ALWON)) {
+	/*
+	 * A CPU cluster PM transition means lost timer context only on OMAP3:
+	 * pm34xx.c signals one when the PER power domain, home of GPTIMER2-9,
+	 * goes off. OMAP4 signals one when the MPU subsystem loses context in
+	 * cpuidle (cpuidle44xx.c), and its timers, in the L4PER, ABE and WKUP
+	 * domains, keep theirs. Restoring it there writes a stale counter into
+	 * running timers: a remote processor's OS tick (the IPU's GPTIMER3 and
+	 * 4) is set back on every cluster wake-up and never reaches its first
+	 * overflow, and the firmware's own setup of the timer is undone.
+	 */
+	if (!(timer->capability & OMAP_TIMER_ALWON) &&
+	    of_machine_is_compatible("ti,omap3")) {
 		timer->nb.notifier_call = omap_timer_context_notifier;
 		cpu_pm_register_notifier(&timer->nb);
 	}
@@ -1536,7 +1557,7 @@ static void omap_dm_timer_remove(struct platform_device *pdev)
 	list_for_each_entry(timer, &omap_timer_list, node)
 		if (!strcmp(dev_name(&timer->pdev->dev),
 			    dev_name(&pdev->dev))) {
-			if (!(timer->capability & OMAP_TIMER_ALWON))
+			if (timer->nb.notifier_call)
 				cpu_pm_unregister_notifier(&timer->nb);
 			list_del(&timer->node);
 			ret = 0;

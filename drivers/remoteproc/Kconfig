@@ -106,6 +106,19 @@ config OMAP_REMOTEPROC_WATCHDOG
 	  processors and triggers the timer interrupt upon a watchdog
 	  detection.
 
+config OMAP_REMOTEPROC_RESMGR
+	tristate "OMAP4 remote processor resource manager"
+	depends on OMAP_REMOTEPROC && RPMSG
+	depends on ARCH_OMAP4 || COMPILE_TEST
+	help
+	  The host side of the resource manager protocol of TI's
+	  pre-upstream OMAP4 IPU firmware (sysbios-rpmsg 1.x): it powers
+	  the IVA-HD, its sequencers and the SL2 interface for the
+	  firmware's codecs. Also binds the "ti,ivahd" device.
+
+	  Say M here if your IPU firmware is of that kind (an OMAP4
+	  Android device's ducati-m3.bin).
+
 config WKUP_M3_RPROC
 	tristate "AMx3xx Wakeup M3 remoteproc support"
 	depends on SOC_AM33XX || SOC_AM43XX

@@ -93,13 +93,19 @@ properties:
 # The following are the optional properties:
 
   memory-region:
-    maxItems: 1
+    minItems: 1
+    maxItems: 2
     description: |
       phandle to the reserved memory node to be associated
       with the remoteproc device. The reserved memory node
       can be a CMA memory node, and should be defined as
       per the bindings,
       Documentation/devicetree/bindings/reserved-memory/reserved-memory.txt
+
+      A firmware image in TI's older RPRC format (OMAP4 IPU) takes
+      two: a no-map region for its IPC buffers and trace buffer,
+      then a reusable CMA pool its code and data carveouts are
+      allocated from while it runs.
 
   reg:
     description: |
@@ -156,6 +162,13 @@ properties:
       external tick wakeup, and to support Power Management
       features. The timers to be used should match with the
       timers used in the firmware image.
+
+  ti,no-auto-boot:
+    type: boolean
+    description: |
+      Do not boot the remote processor when the driver probes:
+      a user starts it through the remoteproc sysfs state file,
+      so that its memory is in use only while it is needed.
 
   ti,watchdog-timers:
     $ref: /schemas/types.yaml#/definitions/phandle-array
