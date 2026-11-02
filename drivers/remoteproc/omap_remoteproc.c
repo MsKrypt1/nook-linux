@@ -33,6 +33,11 @@
 #include <linux/regmap.h>
 #include <linux/mfd/syscon.h>
 #include <linux/reset.h>
+#include <linux/iommu.h>
+#include <linux/rpmsg.h>
+#include <linux/virtio_ids.h>
+#include <linux/virtio_ring.h>
+#include <linux/vmalloc.h>
 #include <clocksource/timer-ti-dm.h>
 
 #include <linux/platform_data/dmtimer-omap.h>
@@ -87,6 +92,20 @@ struct omap_rproc_timer {
 };
 
 /**
+ * struct omap_rprc_carveout - a carveout of a legacy RPRC firmware image
+ * @da: device address
+ * @pa: physical address, fixed by the image
+ * @len: size
+ */
+struct omap_rprc_carveout {
+	u32 da;
+	u32 pa;
+	u32 len;
+};
+
+#define OMAP_RPRC_MAX_REGIONS	2
+
+/**
  * struct omap_rproc - omap remote processor state
  * @mbox: mailbox channel handle
  * @client: mailbox client to request the mailbox channel
@@ -103,6 +122,15 @@ struct omap_rproc_timer {
  * @pm_comp: completion primitive to sync for suspend response
  * @fck: functional clock for the remoteproc
  * @suspend_acked: state machine flag to store the suspend request ack
+ * @rmem: the memory-regions that legacy RPRC firmware carveouts must lie in:
+ *	a no-map one, and optionally a CMA pool (@rmem_cma)
+ * @rmem_cma: the CMA pool among @rmem, NULL if none
+ * @rprc: the firmware being run is a legacy RPRC image
+ * @rprc_cos: the RPRC image's carveouts
+ * @rprc_num_cos: number of entries in @rprc_cos
+ * @rprc_ipc_pa: physical address of the RPRC image's IPC carveout
+ * @rprc_num_vdevs: number of rpmsg devices (one per core) of RPRC images
+ * @rprc_suspend_da: device address of the RPRC image's suspend flag, 0 if none
  */
 struct omap_rproc {
 	struct mbox_chan *mbox;
@@ -120,6 +148,14 @@ struct omap_rproc {
 	struct completion pm_comp;
 	struct clk *fck;
 	bool suspend_acked;
+	struct reserved_mem *rmem[OMAP_RPRC_MAX_REGIONS];
+	struct reserved_mem *rmem_cma;
+	bool rprc;
+	struct omap_rprc_carveout *rprc_cos;
+	int rprc_num_cos;
+	u32 rprc_ipc_pa;
+	int rprc_num_vdevs;
+	u32 rprc_suspend_da;
 };
 
 /**
@@ -136,10 +172,12 @@ struct omap_rproc_mem_data {
  * struct omap_rproc_dev_data - device data for the omap remote processor
  * @device_name: device name of the remote processor
  * @mems: memory definitions for this remote processor
+ * @rprc_vdevs: rpmsg devices of a legacy RPRC firmware image (0: not supported)
  */
 struct omap_rproc_dev_data {
 	const char *device_name;
 	const struct omap_rproc_mem_data *mems;
+	int rprc_vdevs;
 };
 
 /**
@@ -533,6 +571,716 @@ static void omap_rproc_mbox_callback(struct mbox_client *client, void *data)
 	}
 }
 
+/*
+ * Legacy firmware: TI's pre-upstream image format ("RPRC", version 2), as the
+ * OMAP4 Android kernels of 2011-2012 loaded it, e.g. the Ducati OMX firmware
+ * ducati-m3.bin. A text header, then sections, the first one the resource
+ * table. Its carveouts have fixed physical addresses, which the firmware
+ * uses. Its IPC layout is fixed as well: per core, 256 KiB of rpmsg buffers
+ * and then two vrings of 256 entries, 4 KiB aligned, from the start of the
+ * IPU_MEM_IPC_VRING carveout; the host announces each core's part by mailbox
+ * (RP_MBOX_READY, then its physical address). Its rpmsg header has another
+ * layout (VIRTIO_RPMSG_F_TI_LEGACY).
+ */
+#define RPRC_VERSION		2
+#define RPRC_MAX_CARVEOUTS	16
+#define RPRC_NUM_BUFS		512
+#define RPRC_BUF_SIZE		512
+#define RPRC_BUFS_SPACE		(RPRC_NUM_BUFS * RPRC_BUF_SIZE)
+#define RPRC_VRING_NUM		(RPRC_NUM_BUFS / 2)
+#define RPRC_VRING_ALIGN	4096
+#define RPRC_IPC_NAME		"IPU_MEM_IPC_VRING"
+
+struct rprc_header {
+	char magic[4];
+	u32 version;
+	u32 header_len;
+	char header[];
+} __packed;
+
+struct rprc_section {
+	u32 type;
+	u64 da;
+	u32 len;
+	u8 content[];
+} __packed;
+
+enum rprc_section_type {
+	RPRC_SEC_RESOURCE	= 0,
+	RPRC_SEC_TEXT		= 1,
+	RPRC_SEC_DATA		= 2,
+	RPRC_SEC_MMU		= 3,
+	RPRC_SEC_SIGNATURE	= 4,
+};
+
+struct rprc_resource {
+	u32 type;
+	u64 da;
+	u64 pa;
+	u32 len;
+	u32 reserved;
+	u8 name[48];
+} __packed;
+
+enum rprc_resource_type {
+	RPRC_RSC_CARVEOUT	= 0,
+	RPRC_RSC_DEVMEM		= 1,
+	RPRC_RSC_DEVICE		= 2,
+	RPRC_RSC_IRQ		= 3,
+	RPRC_RSC_TRACE		= 4,
+	RPRC_RSC_BOOTADDR	= 5,
+	RPRC_RSC_CRASHDUMP	= 6,
+	RPRC_RSC_SUSPENDADDR	= 7,
+};
+
+static bool omap_rproc_fw_is_rprc(const struct firmware *fw)
+{
+	return fw->size >= sizeof(struct rprc_header) &&
+	       !memcmp(fw->data, "RPRC", 4);
+}
+
+static u32 omap_rprc_vring_size(void)
+{
+	return PAGE_ALIGN(vring_size(RPRC_VRING_NUM, RPRC_VRING_ALIGN));
+}
+
+/* one core's IPC memory: its buffers, then its two vrings */
+static u32 omap_rprc_ipc_size(void)
+{
+	return RPRC_BUFS_SPACE + 2 * omap_rprc_vring_size();
+}
+
+/* the sections; omap_rprc_sanity_check() has checked the bounds */
+static const struct rprc_section *rprc_first(const struct firmware *fw)
+{
+	const struct rprc_header *hdr = (const void *)fw->data;
+
+	return (const void *)(fw->data + sizeof(*hdr) + hdr->header_len);
+}
+
+static const struct rprc_section *rprc_next(const struct firmware *fw,
+					    const struct rprc_section *sec)
+{
+	size_t off = (const u8 *)sec - fw->data + sizeof(*sec) + sec->len;
+
+	return off < fw->size ? (const void *)(fw->data + off) : NULL;
+}
+
+#define for_each_rprc_section(sec, fw) \
+	for (sec = rprc_first(fw); sec; sec = rprc_next(fw, sec))
+
+static void rprc_rsc_name(char *buf, size_t size,
+			  const struct rprc_resource *rsc)
+{
+	size_t n = min(size - 1, sizeof(rsc->name));
+
+	memcpy(buf, rsc->name, n);
+	buf[n] = '\0';
+	buf[strnlen(buf, n)] = '\0';
+}
+
+static int omap_rprc_sanity_check(struct rproc *rproc,
+				  const struct firmware *fw)
+{
+	const struct rprc_header *hdr = (const void *)fw->data;
+	struct device *dev = &rproc->dev;
+	const struct rprc_section *sec;
+	size_t off;
+
+	if (hdr->version != RPRC_VERSION) {
+		dev_err(dev, "RPRC image version %u, expected %u\n",
+			hdr->version, RPRC_VERSION);
+		return -EINVAL;
+	}
+
+	off = sizeof(*hdr) + (size_t)hdr->header_len;
+	if (hdr->header_len > fw->size || off + sizeof(*sec) > fw->size) {
+		dev_err(dev, "RPRC image truncated in its header\n");
+		return -EINVAL;
+	}
+
+	sec = (const void *)(fw->data + off);
+	if (sec->type != RPRC_SEC_RESOURCE ||
+	    sec->len % sizeof(struct rprc_resource)) {
+		dev_err(dev, "RPRC image: no resource table first\n");
+		return -EINVAL;
+	}
+
+	while (off < fw->size) {
+		sec = (const void *)(fw->data + off);
+		if (off + sizeof(*sec) > fw->size ||
+		    sec->len > fw->size - off - sizeof(*sec)) {
+			dev_err(dev, "RPRC image truncated at 0x%zx\n", off);
+			return -EINVAL;
+		}
+		if ((sec->type == RPRC_SEC_TEXT || sec->type == RPRC_SEC_DATA) &&
+		    sec->da + sec->len > (u64)U32_MAX + 1) {
+			dev_err(dev, "RPRC section at da 0x%llx too large\n",
+				sec->da);
+			return -EINVAL;
+		}
+		off += sizeof(*sec) + sec->len;
+	}
+
+	return 0;
+}
+
+/* the memory-region holding [pa, pa + len), or NULL */
+static struct reserved_mem *omap_rprc_region(struct omap_rproc *oproc,
+					     u64 pa, u64 len)
+{
+	int i;
+
+	for (i = 0; i < OMAP_RPRC_MAX_REGIONS; i++) {
+		struct reserved_mem *r = oproc->rmem[i];
+
+		if (r && pa >= r->base && pa + len <= (u64)r->base + r->size)
+			return r;
+	}
+
+	return NULL;
+}
+
+/* whether the memory-regions together hold [pa, pa + len) */
+static bool omap_rprc_in_regions(struct omap_rproc *oproc, u64 pa, u64 len)
+{
+	while (len) {
+		struct reserved_mem *r = omap_rprc_region(oproc, pa, 1);
+		u64 n;
+
+		if (!r)
+			return false;
+		n = min_t(u64, len, (u64)r->base + r->size - pa);
+		pa += n;
+		len -= n;
+	}
+
+	return true;
+}
+
+/*
+ * Note a carveout of the image. Those outside the memory-regions are not
+ * mapped (returns 1): the image's IOBUFS windows were where Android's ION
+ * heaps gave the firmware its buffers.
+ */
+static int omap_rprc_add_carveout(struct rproc *rproc,
+				  const struct rprc_resource *rsc,
+				  const char *name)
+{
+	struct omap_rproc *oproc = rproc->priv;
+	struct device *dev = &rproc->dev;
+	struct omap_rprc_carveout *c;
+
+	if (!rsc->pa || !rsc->len || rsc->da + rsc->len > (u64)U32_MAX + 1 ||
+	    rsc->pa + rsc->len > (u64)U32_MAX + 1) {
+		dev_err(dev, "RPRC carveout %s: unsupported da 0x%llx pa 0x%llx len 0x%x\n",
+			name, rsc->da, rsc->pa, rsc->len);
+		return -EINVAL;
+	}
+
+	/* the image places its carveouts itself: they must be reserved */
+	if (!omap_rprc_in_regions(oproc, rsc->pa, rsc->len)) {
+		dev_info(dev, "RPRC carveout %s at 0x%llx (0x%x bytes) is outside the memory-regions: not mapped\n",
+			 name, rsc->pa, rsc->len);
+		return 1;
+	}
+
+	if (oproc->rprc_num_cos == RPRC_MAX_CARVEOUTS) {
+		dev_err(dev, "too many RPRC carveouts\n");
+		return -EINVAL;
+	}
+
+	c = &oproc->rprc_cos[oproc->rprc_num_cos++];
+	c->da = rsc->da;
+	c->pa = rsc->pa;
+	c->len = rsc->len;
+
+	return 0;
+}
+
+/*
+ * The carveouts' part in the CMA pool is allocated from it at each start
+ * (the image's addresses: the start of the pool) and given back at each
+ * stop, so that the memory is the kernel's while the IPU is off.
+ */
+static int omap_rprc_cma_alloc(struct rproc *rproc, struct rproc_mem_entry *mem)
+{
+	struct device *dev = rproc->dev.parent;
+	dma_addr_t dma;
+	void *cookie;
+
+	cookie = dma_alloc_attrs(dev, mem->len, &dma, GFP_KERNEL,
+				 DMA_ATTR_NO_KERNEL_MAPPING);
+	if (!cookie)
+		return -ENOMEM;
+
+	if (dma != mem->dma) {
+		dev_err(&rproc->dev, "CMA block at %pad, not at %pad\n", &dma,
+			&mem->dma);
+		dma_free_attrs(dev, mem->len, cookie, dma,
+			       DMA_ATTR_NO_KERNEL_MAPPING);
+		return -EBUSY;
+	}
+
+	mem->priv = cookie;
+	return 0;
+}
+
+static int omap_rprc_cma_release(struct rproc *rproc,
+				 struct rproc_mem_entry *mem)
+{
+	dma_free_attrs(rproc->dev.parent, mem->len, mem->priv, mem->dma,
+		       DMA_ATTR_NO_KERNEL_MAPPING);
+	mem->priv = NULL;
+	return 0;
+}
+
+static int omap_rprc_register_cma(struct rproc *rproc)
+{
+	struct omap_rproc *oproc = rproc->priv;
+	struct reserved_mem *cma = oproc->rmem_cma;
+	struct rproc_mem_entry *mem;
+	u64 end = 0;
+	int i;
+
+	if (!cma)
+		return 0;
+
+	for (i = 0; i < oproc->rprc_num_cos; i++) {
+		struct omap_rprc_carveout *c = &oproc->rprc_cos[i];
+
+		if (c->pa + c->len > cma->base &&
+		    c->pa < (u64)cma->base + cma->size)
+			end = max_t(u64, end, (u64)c->pa + c->len);
+	}
+	if (!end)
+		return 0;
+
+	mem = rproc_mem_entry_init(&rproc->dev, NULL, cma->base,
+				   PAGE_ALIGN(end - cma->base), 0,
+				   omap_rprc_cma_alloc, omap_rprc_cma_release,
+				   "rprc-cma");
+	if (!mem)
+		return -ENOMEM;
+
+	rproc_add_carveout(rproc, mem);
+	return 0;
+}
+
+static struct omap_rprc_carveout *omap_rprc_find(struct omap_rproc *oproc,
+						 u64 da, u64 len)
+{
+	int i;
+
+	for (i = 0; i < oproc->rprc_num_cos; i++) {
+		struct omap_rprc_carveout *c = &oproc->rprc_cos[i];
+
+		if (da >= c->da && da + len <= (u64)c->da + c->len)
+			return c;
+	}
+
+	return NULL;
+}
+
+/* kernel mappings of the parts the host itself reads and writes */
+static int omap_rprc_map(struct rproc *rproc, struct rproc_mem_entry *mem)
+{
+	mem->va = memremap(mem->dma, mem->len, MEMREMAP_WC);
+	if (!mem->va)
+		return -ENOMEM;
+
+	memset(mem->va, 0, mem->len);
+	return 0;
+}
+
+static int omap_rprc_unmap(struct rproc *rproc, struct rproc_mem_entry *mem)
+{
+	memunmap(mem->va);
+	mem->va = NULL;
+	return 0;
+}
+
+static int omap_rprc_register(struct rproc *rproc, u32 pa, u32 len, u32 da,
+			      bool map, const char *fmt, int i, int j)
+{
+	struct rproc_mem_entry *mem;
+
+	mem = rproc_mem_entry_init(&rproc->dev, NULL, pa, len, da,
+				   map ? omap_rprc_map : NULL,
+				   map ? omap_rprc_unmap : NULL, fmt, i, j);
+	if (!mem)
+		return -ENOMEM;
+
+	rproc_add_carveout(rproc, mem);
+	return 0;
+}
+
+static void omap_rprc_drop_carveouts(struct rproc *rproc)
+{
+	struct rproc_mem_entry *mem, *tmp;
+
+	/* registered by omap_rprc_parse_fw() only, none allocated yet */
+	list_for_each_entry_safe(mem, tmp, &rproc->carveouts, node) {
+		list_del(&mem->node);
+		kfree(mem);
+	}
+}
+
+/*
+ * Turn the RPRC resources into a resource table: traces, IOMMU mappings for
+ * the carveouts (at the image's addresses) and devmems, and one rpmsg vdev per
+ * core in the old IPC layout.
+ */
+static int omap_rprc_parse_fw(struct rproc *rproc, const struct firmware *fw)
+{
+	struct omap_rproc *oproc = rproc->priv;
+	struct device *dev = &rproc->dev;
+	const struct rprc_section *sec = rprc_first(fw);
+	const struct rprc_resource *rsc = (const void *)sec->content;
+	const struct rprc_resource *ipc = NULL;
+	int nrsc = sec->len / sizeof(*rsc);
+	int nvdev = oproc->rprc_num_vdevs;
+	int i, v, n, ntrace = 0, nmap = 0, mapped_ipc_data = 0;
+	u32 ipc_size = omap_rprc_ipc_size(), ring = omap_rprc_vring_size();
+	struct resource_table *table;
+	struct fw_rsc_hdr *hdr;
+	char name[49];
+	size_t size;
+	void *p;
+	int ret;
+
+	if (!nvdev) {
+		dev_err(dev, "RPRC images are not supported on %s\n",
+			rproc->name);
+		return -EINVAL;
+	}
+
+	oproc->rprc_num_cos = 0;
+	oproc->rprc_suspend_da = 0;
+	for (i = 0; i < nrsc; i++) {
+		rprc_rsc_name(name, sizeof(name), &rsc[i]);
+		dev_dbg(dev, "RPRC resource %u %s: da 0x%llx pa 0x%llx len 0x%x\n",
+			rsc[i].type, name, rsc[i].da, rsc[i].pa, rsc[i].len);
+
+		switch (rsc[i].type) {
+		case RPRC_RSC_TRACE:
+			ntrace++;
+			break;
+		case RPRC_RSC_CARVEOUT:
+			ret = omap_rprc_add_carveout(rproc, &rsc[i], name);
+			if (ret < 0)
+				return ret;
+			if (ret)
+				break;
+			if (!strcmp(name, RPRC_IPC_NAME))
+				ipc = &rsc[i];
+			fallthrough;
+		case RPRC_RSC_DEVMEM:
+			if (rsc[i].da > U32_MAX || rsc[i].pa > U32_MAX) {
+				dev_err(dev, "RPRC devmem %s out of range\n",
+					name);
+				return -EINVAL;
+			}
+			nmap++;
+			break;
+		case RPRC_RSC_SUSPENDADDR:
+			oproc->rprc_suspend_da = rsc[i].da;
+			break;
+		default:
+			/* boot addresses, crash dumps */
+			break;
+		}
+	}
+
+	if (!ipc || ipc->len < nvdev * ipc_size) {
+		dev_err(dev, "RPRC image has no %s carveout of 0x%x bytes\n",
+			RPRC_IPC_NAME, nvdev * ipc_size);
+		return -EINVAL;
+	}
+
+	/* the vdev buffers become a coherent pool, which needs no-map memory */
+	if (omap_rprc_region(oproc, ipc->pa, ipc->len) == oproc->rmem_cma) {
+		dev_err(dev, "RPRC carveout %s must be in a no-map memory-region\n",
+			RPRC_IPC_NAME);
+		return -EINVAL;
+	}
+
+	ret = omap_rprc_register_cma(rproc);
+	if (ret)
+		goto drop_carveouts;
+
+	n = ntrace + nmap + nvdev;
+	size = struct_size(table, offset, n) +
+	       ntrace * (sizeof(*hdr) + sizeof(struct fw_rsc_trace)) +
+	       nmap * (sizeof(*hdr) + sizeof(struct fw_rsc_devmem)) +
+	       nvdev * (sizeof(*hdr) + struct_size_t(struct fw_rsc_vdev,
+						      vring, 2));
+	table = kzalloc(size, GFP_KERNEL);
+	if (!table) {
+		ret = -ENOMEM;
+		goto drop_carveouts;
+	}
+
+	table->ver = 1;
+	table->num = n;
+	p = &table->offset[n];
+	n = 0;
+
+	for (i = 0; i < nrsc; i++) {
+		rprc_rsc_name(name, sizeof(name), &rsc[i]);
+		hdr = p;
+
+		if (rsc[i].type == RPRC_RSC_TRACE) {
+			struct fw_rsc_trace *t = (void *)hdr->data;
+			struct omap_rprc_carveout *c;
+
+			c = omap_rprc_find(oproc, rsc[i].da, rsc[i].len);
+			if (!c || omap_rprc_region(oproc, c->pa, c->len) ==
+				  oproc->rmem_cma) {
+				dev_err(dev, "RPRC trace %s outside the no-map carveouts\n",
+					name);
+				ret = -EINVAL;
+				goto free_table;
+			}
+			/* map its carveout for the host (once) */
+			if (!(mapped_ipc_data & BIT(c - oproc->rprc_cos))) {
+				ret = omap_rprc_register(rproc, c->pa, c->len,
+							 c->da, true,
+							 "rprc-trace%d", n, 0);
+				if (ret)
+					goto free_table;
+				mapped_ipc_data |= BIT(c - oproc->rprc_cos);
+			}
+
+			hdr->type = RSC_TRACE;
+			t->da = rsc[i].da;
+			t->len = rsc[i].len;
+			strscpy(t->name, name, sizeof(t->name));
+			p += sizeof(*hdr) + sizeof(*t);
+		} else if (rsc[i].type == RPRC_RSC_CARVEOUT ||
+			   rsc[i].type == RPRC_RSC_DEVMEM) {
+			struct fw_rsc_devmem *d = (void *)hdr->data;
+
+			if (rsc[i].type == RPRC_RSC_CARVEOUT &&
+			    !omap_rprc_in_regions(oproc, rsc[i].pa, rsc[i].len))
+				continue;	/* not mapped */
+
+			hdr->type = RSC_DEVMEM;
+			d->da = rsc[i].da;
+			d->pa = rsc[i].pa;
+			d->len = rsc[i].len;
+			d->flags = IOMMU_READ | IOMMU_WRITE;
+			strscpy(d->name, name, sizeof(d->name));
+			p += sizeof(*hdr) + sizeof(*d);
+		} else {
+			continue;
+		}
+		table->offset[n++] = (void *)hdr - (void *)table;
+	}
+
+	for (v = 0; v < nvdev; v++) {
+		struct fw_rsc_vdev *vd;
+		u32 da = ipc->da + v * ipc_size;
+		u32 pa = ipc->pa + v * ipc_size;
+
+		hdr = p;
+		vd = (void *)hdr->data;
+		hdr->type = RSC_VDEV;
+		vd->id = VIRTIO_ID_RPMSG;
+		vd->dfeatures = BIT(0) /* VIRTIO_RPMSG_F_NS */ |
+				BIT(VIRTIO_RPMSG_F_TI_LEGACY);
+		vd->num_of_vrings = 2;
+		for (i = 0; i < 2; i++) {
+			vd->vring[i].da = da + RPRC_BUFS_SPACE + i * ring;
+			vd->vring[i].align = RPRC_VRING_ALIGN;
+			vd->vring[i].num = RPRC_VRING_NUM;
+			vd->vring[i].notifyid = -1;
+		}
+		table->offset[n++] = (void *)hdr - (void *)table;
+		p += sizeof(*hdr) + struct_size(vd, vring, 2);
+
+		/* the vdev's buffers and vrings, at the image's addresses */
+		ret = omap_rprc_register(rproc, pa, RPRC_BUFS_SPACE, da, false,
+					 "vdev%dbuffer", v, 0);
+		for (i = 0; !ret && i < 2; i++)
+			ret = omap_rprc_register(rproc,
+						 pa + RPRC_BUFS_SPACE + i * ring,
+						 ring,
+						 da + RPRC_BUFS_SPACE + i * ring,
+						 true, "vdev%dvring%d", v, i);
+		if (ret)
+			goto free_table;
+	}
+
+	oproc->rprc_ipc_pa = ipc->pa;
+	rproc->cached_table = table;
+	rproc->table_ptr = table;
+	rproc->table_sz = size;
+	return 0;
+
+free_table:
+	kfree(table);
+drop_carveouts:
+	/* the core cleans up only after a parse_fw that succeeded */
+	omap_rprc_drop_carveouts(rproc);
+	return ret;
+}
+
+/*
+ * Copy into the IPU's memory, write-combined as the IPU does not snoop the
+ * caches: the no-map region is memremapped, CMA pages (System RAM, which
+ * memremap refuses) are vmapped for the copy.
+ */
+static int omap_rprc_copy(struct omap_rproc *oproc, u64 pa, const void *src,
+			  size_t len)
+{
+	while (len) {
+		struct reserved_mem *r = omap_rprc_region(oproc, pa, 1);
+		phys_addr_t start = round_down(pa, PAGE_SIZE);
+		unsigned int i, npages;
+		struct page **pages;
+		size_t n;
+		void *va;
+
+		if (!r)
+			return -EINVAL;
+		n = min_t(u64, len, (u64)r->base + r->size - pa);
+
+		if (r != oproc->rmem_cma) {
+			va = memremap(pa, n, MEMREMAP_WC);
+			if (!va)
+				return -ENOMEM;
+			memcpy(va, src, n);
+			memunmap(va);
+		} else {
+			npages = DIV_ROUND_UP(pa + n - start, PAGE_SIZE);
+			pages = kvmalloc_array(npages, sizeof(*pages),
+					       GFP_KERNEL);
+			if (!pages)
+				return -ENOMEM;
+			for (i = 0; i < npages; i++)
+				pages[i] = pfn_to_page(PHYS_PFN(start) + i);
+			va = vmap(pages, npages, VM_MAP,
+				  pgprot_writecombine(PAGE_KERNEL));
+			kvfree(pages);
+			if (!va)
+				return -ENOMEM;
+			memcpy(va + (pa - start), src, n);
+			vunmap(va);
+		}
+
+		pa += n;
+		src += n;
+		len -= n;
+	}
+
+	/* drain the write buffer before the IPU is released */
+	wmb();
+	return 0;
+}
+
+/* copy the text and data sections into their carveouts */
+static int omap_rprc_load(struct rproc *rproc, const struct firmware *fw)
+{
+	struct omap_rproc *oproc = rproc->priv;
+	struct device *dev = &rproc->dev;
+	const struct rprc_section *sec;
+	struct omap_rprc_carveout *c;
+	int ret;
+
+	for_each_rprc_section(sec, fw) {
+		if (sec->type != RPRC_SEC_TEXT && sec->type != RPRC_SEC_DATA) {
+			/* the resource table, a page table and a signature for secure boot */
+			continue;
+		}
+
+		c = omap_rprc_find(oproc, sec->da, sec->len);
+		if (!c) {
+			dev_err(dev, "RPRC section at da 0x%llx (0x%x bytes) outside the carveouts\n",
+				sec->da, sec->len);
+			return -EINVAL;
+		}
+
+		ret = omap_rprc_copy(oproc, c->pa + (sec->da - c->da),
+				     sec->content, sec->len);
+		if (ret)
+			return ret;
+	}
+
+	return 0;
+}
+
+/* tell each core where its IPC memory is, as the old host did */
+static int omap_rprc_announce(struct omap_rproc *oproc)
+{
+	int v, i, ret;
+
+	for (v = 0; v < oproc->rprc_num_vdevs; v++) {
+		u32 msg[] = {
+			RP_MBOX_READY,
+			oproc->rprc_ipc_pa + v * omap_rprc_ipc_size(),
+			RP_MBOX_ECHO_REQUEST,
+		};
+
+		for (i = 0; i < ARRAY_SIZE(msg); i++) {
+			ret = mbox_send_message(oproc->mbox,
+						(void *)(uintptr_t)msg[i]);
+			if (ret < 0)
+				return ret;
+		}
+	}
+
+	return 0;
+}
+
+static int omap_rproc_sanity_check(struct rproc *rproc,
+				   const struct firmware *fw)
+{
+	if (omap_rproc_fw_is_rprc(fw))
+		return omap_rprc_sanity_check(rproc, fw);
+
+	return rproc_elf_sanity_check(rproc, fw);
+}
+
+static int omap_rproc_parse_fw(struct rproc *rproc, const struct firmware *fw)
+{
+	struct omap_rproc *oproc = rproc->priv;
+
+	oproc->rprc = omap_rproc_fw_is_rprc(fw);
+	if (oproc->rprc)
+		return omap_rprc_parse_fw(rproc, fw);
+
+	return rproc_elf_load_rsc_table(rproc, fw);
+}
+
+static int omap_rproc_load(struct rproc *rproc, const struct firmware *fw)
+{
+	if (omap_rproc_fw_is_rprc(fw))
+		return omap_rprc_load(rproc, fw);
+
+	return rproc_elf_load_segments(rproc, fw);
+}
+
+static struct resource_table *
+omap_rproc_find_loaded_rsc_table(struct rproc *rproc, const struct firmware *fw)
+{
+	/* an RPRC image's table stays with the host */
+	if (omap_rproc_fw_is_rprc(fw))
+		return NULL;
+
+	return rproc_elf_find_loaded_rsc_table(rproc, fw);
+}
+
+static u64 omap_rproc_get_boot_addr(struct rproc *rproc,
+				    const struct firmware *fw)
+{
+	/* the IPU's cores start at their vector table at 0 */
+	if (omap_rproc_fw_is_rprc(fw))
+		return 0;
+
+	return rproc_elf_get_boot_addr(rproc, fw);
+}
+
 /* kick a virtqueue */
 static void omap_rproc_kick(struct rproc *rproc, int vqid)
 {
@@ -627,8 +1375,14 @@ static int omap_rproc_start(struct rproc *rproc)
 	 *
 	 * Note that the reply will _not_ arrive immediately: this message
 	 * will wait in the mailbox fifo until the remote processor is booted.
+	 *
+	 * A legacy RPRC image waits for its IPC memory's address instead.
 	 */
-	ret = mbox_send_message(oproc->mbox, (void *)RP_MBOX_ECHO_REQUEST);
+	if (oproc->rprc)
+		ret = omap_rprc_announce(oproc);
+	else
+		ret = mbox_send_message(oproc->mbox,
+					(void *)RP_MBOX_ECHO_REQUEST);
 	if (ret < 0) {
 		dev_err(dev, "mbox_send_message failed: %d\n", ret);
 		goto put_mbox;
@@ -652,6 +1406,13 @@ static int omap_rproc_start(struct rproc *rproc)
 	 * manually for balancing it for auto-suspend
 	 */
 	pm_runtime_set_active(dev);
+	/*
+	 * The suspend protocol of legacy RPRC images (hibernation, the
+	 * suspend flag) is not the one _omap_rproc_suspend() speaks: keep
+	 * them running.
+	 */
+	pm_runtime_set_autosuspend_delay(dev, oproc->rprc ? -1 :
+					 oproc->autosuspend_delay);
 	pm_runtime_use_autosuspend(dev);
 	pm_runtime_get_noresume(dev);
 	pm_runtime_enable(dev);
@@ -761,6 +1522,11 @@ static const struct rproc_ops omap_rproc_ops = {
 	.stop		= omap_rproc_stop,
 	.kick		= omap_rproc_kick,
 	.da_to_va	= omap_rproc_da_to_va,
+	.sanity_check	= omap_rproc_sanity_check,
+	.parse_fw	= omap_rproc_parse_fw,
+	.load		= omap_rproc_load,
+	.find_loaded_rsc_table = omap_rproc_find_loaded_rsc_table,
+	.get_boot_addr	= omap_rproc_get_boot_addr,
 };
 
 #ifdef CONFIG_PM
@@ -771,6 +1537,47 @@ static bool _is_rproc_in_standby(struct omap_rproc *oproc)
 
 /* 1 sec is long enough time to let the remoteproc side suspend the device */
 #define DEF_SUSPEND_TIMEOUT 1000
+
+/*
+ * The suspend request of RPRC images (TI's 2012 IPC): no ACK message, the
+ * firmware sets the word at its SUSPENDADDR once it is about to save its
+ * context (TI's vendor omap_remoteproc.c). Then, as with newer firmware, the
+ * module's STANDBY tells that it is done.
+ */
+#define RPRC_MBOX_SUSPEND	0xffffff07
+
+static int omap_rprc_suspend_request(struct rproc *rproc, unsigned long to)
+{
+	struct device *dev = rproc->dev.parent;
+	struct omap_rproc *oproc = rproc->priv;
+	unsigned long ta = jiffies + to;
+	u32 *flag = NULL;
+	int ret;
+
+	if (oproc->rprc_suspend_da)
+		flag = rproc_da_to_va(rproc, oproc->rprc_suspend_da,
+				      sizeof(*flag), NULL);
+	if (!flag) {
+		dev_err(dev, "the firmware has no suspend flag\n");
+		return -EBUSY;
+	}
+
+	WRITE_ONCE(*flag, 0);
+	ret = mbox_send_message(oproc->mbox, (void *)RPRC_MBOX_SUSPEND);
+	if (ret < 0) {
+		dev_err(dev, "PM mbox_send_message failed: %d\n", ret);
+		return ret;
+	}
+
+	while (!READ_ONCE(*flag)) {
+		if (time_after(jiffies, ta))
+			return -EBUSY;
+		usleep_range(500, 1000);
+	}
+
+	return 0;
+}
+
 static int _omap_rproc_suspend(struct rproc *rproc, bool auto_suspend)
 {
 	struct device *dev = rproc->dev.parent;
@@ -780,6 +1587,13 @@ static int _omap_rproc_suspend(struct rproc *rproc, bool auto_suspend)
 	u32 suspend_msg = auto_suspend ?
 				RP_MBOX_SUSPEND_AUTO : RP_MBOX_SUSPEND_SYSTEM;
 	int ret;
+
+	if (oproc->rprc) {
+		ret = omap_rprc_suspend_request(rproc, to);
+		if (ret)
+			return ret;
+		goto wait_standby;
+	}
 
 	reinit_completion(&oproc->pm_comp);
 	oproc->suspend_acked = false;
@@ -792,6 +1606,8 @@ static int _omap_rproc_suspend(struct rproc *rproc, bool auto_suspend)
 	ret = wait_for_completion_timeout(&oproc->pm_comp, to);
 	if (!oproc->suspend_acked)
 		return -EBUSY;
+
+wait_standby:
 
 	/*
 	 * The remoteproc side is returning the ACK message before saving the
@@ -1064,6 +1880,7 @@ static const struct omap_rproc_dev_data omap4_dsp_dev_data = {
 static const struct omap_rproc_dev_data omap4_ipu_dev_data = {
 	.device_name	= "ipu",
 	.mems		= ipu_mems,
+	.rprc_vdevs	= 2,	/* one per Cortex-M3 */
 };
 
 static const struct omap_rproc_dev_data omap5_dsp_dev_data = {
@@ -1321,6 +2138,8 @@ static int omap_rproc_probe(struct platform_device *pdev)
 	oproc->reset = reset;
 	/* All existing OMAP IPU and DSP processors have an MMU */
 	rproc->has_iommu = true;
+	/* Or started on demand, through sysfs or a client driver */
+	rproc->auto_boot = !of_property_read_bool(np, "ti,no-auto-boot");
 
 #ifdef CONFIG_ARM_DMA_USE_IOMMU
 	/*
@@ -1359,11 +2178,52 @@ static int omap_rproc_probe(struct platform_device *pdev)
 	if (IS_ERR(oproc->fck))
 		return PTR_ERR(oproc->fck);
 
-	ret = of_reserved_mem_device_init(&pdev->dev);
-	if (ret) {
-		dev_warn(&pdev->dev, "device does not have specific CMA pool.\n");
-		dev_warn(&pdev->dev, "Typically this should be provided,\n");
-		dev_warn(&pdev->dev, "only omit if you know what you are doing.\n");
+	/*
+	 * Legacy RPRC images place their carveouts themselves: in a no-map
+	 * memory-region (needed for the IPC memory) and optionally a CMA pool,
+	 * the device's, allocated from only while the processor runs.
+	 */
+	oproc->rprc_num_vdevs =
+		((const struct omap_rproc_dev_data *)
+		 of_device_get_match_data(&pdev->dev))->rprc_vdevs;
+	if (oproc->rprc_num_vdevs) {
+		struct device_node *rnp;
+		int i, cma_idx = -1;
+
+		oproc->rprc_cos = devm_kcalloc(&pdev->dev, RPRC_MAX_CARVEOUTS,
+					       sizeof(*oproc->rprc_cos),
+					       GFP_KERNEL);
+		if (!oproc->rprc_cos)
+			return -ENOMEM;
+
+		for (i = 0; i < OMAP_RPRC_MAX_REGIONS; i++) {
+			rnp = of_parse_phandle(np, "memory-region", i);
+			if (!rnp)
+				break;
+			oproc->rmem[i] = of_reserved_mem_lookup(rnp);
+			if (oproc->rmem[i] &&
+			    of_property_read_bool(rnp, "reusable") &&
+			    cma_idx < 0) {
+				oproc->rmem_cma = oproc->rmem[i];
+				cma_idx = i;
+			}
+			of_node_put(rnp);
+		}
+
+		ret = 0;
+		if (cma_idx >= 0)
+			ret = of_reserved_mem_device_init_by_idx(&pdev->dev, np,
+								 cma_idx);
+		if (ret)
+			return dev_err_probe(&pdev->dev, ret,
+					     "no CMA pool for RPRC images\n");
+	} else {
+		ret = of_reserved_mem_device_init(&pdev->dev);
+		if (ret) {
+			dev_warn(&pdev->dev, "device does not have specific CMA pool.\n");
+			dev_warn(&pdev->dev, "Typically this should be provided,\n");
+			dev_warn(&pdev->dev, "only omit if you know what you are doing.\n");
+		}
 	}
 	ret = devm_add_action_or_reset(&pdev->dev, omap_rproc_mem_release, &pdev->dev);
 	if (ret)
