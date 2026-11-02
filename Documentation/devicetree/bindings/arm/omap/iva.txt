@@ -11,6 +11,12 @@ Required properties:
   - "ti,iva1" for OMAP2420
 - ti,hwmods: "iva"
 
+Optional properties ("ti,ivahd", for a remote processor's resource manager):
+- resets: the sequencer resets, ICONT1 and ICONT2
+- reset-names: "seq0", "seq1"
+- clocks: the SL2 interface clock
+- clock-names: "sl2if"
+
 Examples:
 
 iva {

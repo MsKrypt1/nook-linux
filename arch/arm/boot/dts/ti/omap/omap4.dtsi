@@ -748,6 +748,11 @@
 
 			iva {
 				compatible = "ti,ivahd";
+				/* The sequencers ICONT1 and ICONT2 */
+				resets = <&prm_ivahd 0>, <&prm_ivahd 1>;
+				reset-names = "seq0", "seq1";
+				clocks = <&ivahd_clkctrl OMAP4_SL2IF_CLKCTRL 0>;
+				clock-names = "sl2if";
 			};
 		};
 	};
