@@ -131,6 +131,8 @@ struct omap_rprc_carveout {
  * @rprc_ipc_pa: physical address of the RPRC image's IPC carveout
  * @rprc_num_vdevs: number of rpmsg devices (one per core) of RPRC images
  * @rprc_suspend_da: device address of the RPRC image's suspend flag, 0 if none
+ * @rprc_release: subdevice that takes the RPRC image's cores out of reset
+ * @rprc_release_added: @rprc_release is on the remoteproc's subdevice list
  */
 struct omap_rproc {
 	struct mbox_chan *mbox;
@@ -156,6 +158,8 @@ struct omap_rproc {
 	u32 rprc_ipc_pa;
 	int rprc_num_vdevs;
 	u32 rprc_suspend_da;
+	struct rproc_subdev rprc_release;
+	bool rprc_release_added;
 };
 
 /**
@@ -1240,6 +1244,28 @@ static int omap_rprc_announce(struct omap_rproc *oproc)
 	return 0;
 }
 
+/*
+ * A legacy RPRC image does not wait for the host's rpmsg: once it has the
+ * messages above, which wait in the mailbox, it announces its channels.
+ * rproc_start() starts the processor before its virtio devices, and on a
+ * busy host (a system resume) the first core's announcements came before
+ * its rpmsg bus had an endpoint for them, and were lost. So the cores leave
+ * reset only after the virtio devices, from a subdevice at the end of the
+ * list, as on the old host, whose firmware loading made them start last.
+ */
+static int omap_rprc_release(struct rproc_subdev *subdev)
+{
+	struct omap_rproc *oproc = container_of(subdev, struct omap_rproc,
+						rprc_release);
+	int ret;
+
+	ret = reset_control_deassert(oproc->reset);
+	if (ret)
+		dev_err(oproc->rproc->dev.parent,
+			"reset control deassert failed: %d\n", ret);
+	return ret;
+}
+
 static int omap_rproc_sanity_check(struct rproc *rproc,
 				   const struct firmware *fw)
 {
@@ -1401,10 +1427,18 @@ static int omap_rproc_start(struct rproc *rproc)
 		goto put_mbox;
 	}
 
-	ret = reset_control_deassert(oproc->reset);
-	if (ret) {
-		dev_err(dev, "reset control deassert failed: %d\n", ret);
-		goto disable_timers;
+	if (oproc->rprc) {
+		/* after the virtio devices: omap_rprc_release() */
+		oproc->rprc_release.start = omap_rprc_release;
+		rproc_add_subdev(rproc, &oproc->rprc_release);
+		oproc->rprc_release_added = true;
+	} else {
+		ret = reset_control_deassert(oproc->reset);
+		if (ret) {
+			dev_err(dev, "reset control deassert failed: %d\n",
+				ret);
+			goto disable_timers;
+		}
 	}
 
 	/*
@@ -1440,6 +1474,11 @@ static int omap_rproc_stop(struct rproc *rproc)
 	struct device *dev = rproc->dev.parent;
 	struct omap_rproc *oproc = rproc->priv;
 	int ret;
+
+	if (oproc->rprc_release_added) {
+		rproc_remove_subdev(rproc, &oproc->rprc_release);
+		oproc->rprc_release_added = false;
+	}
 
 	/*
 	 * cancel any possible scheduled runtime suspend by incrementing
