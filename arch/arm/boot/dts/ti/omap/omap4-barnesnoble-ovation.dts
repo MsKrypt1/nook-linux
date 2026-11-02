@@ -301,6 +301,15 @@
 			tDQSCK-max-derated = <6000>;
 		};
 	};
+
+	/*
+	 * H.264 decoding on the IVA-HD through the OMX server of the IPU
+	 * firmware (omap4-ducati-vdec), which boots the IPU while in use
+	 */
+	video-codec {
+		compatible = "ti,omap4-ducati-vdec";
+		ti,rproc = <&ipu>;
+	};
 };
 
 /*
@@ -891,9 +900,9 @@
  * The IPU (Ducati, two Cortex-M3) with the OMX firmware of the unit's Android
  * system, which drives the IVA-HD. GPTIMER3 and 4 are its cores' tick timers
  * (the vendor kernel's ipu_timers); it arms its watchdog only on GPTIMER9/11
- * the host has enabled. Started on demand (echo start >
- * /sys/class/remoteproc/remoteproc0/state): its text and data take up to
- * 56 MiB of the CMA pool while it runs.
+ * the host has enabled. Started on demand, by the decoder (video-codec) or
+ * by hand (echo start > /sys/class/remoteproc/remoteproc0/state): its text
+ * and data take up to 56 MiB of the CMA pool while it runs.
  */
 &ipu {
 	status = "okay";
