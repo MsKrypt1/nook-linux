@@ -41,6 +41,32 @@
 			mem-type = <1>;		/* uncached: nothing stuck in a buffer */
 			ecc-size = <16>;
 		};
+
+		/*
+		 * The IPU (Ducati) firmware from the unit's Android system,
+		 * ducati-m3.bin (a legacy RPRC image), fixes the physical
+		 * addresses of its carveouts: IPC 0xb8d00000 (2 MiB), text
+		 * 0xb8f00000 (6 MiB), data 0xb9600000 (48 MiB), and I/O buffer
+		 * windows the host fills (not reserved).
+		 *
+		 * The IPC memory becomes the rpmsg buffer pool, which needs a
+		 * no-map region: that one, plus the first MiB of the text, as
+		 * CMA areas start on a 4 MiB boundary.
+		 */
+		ipu_ipc_memory: ipu-ipc@b8d00000 {
+			reg = <0xb8d00000 0x300000>;
+			no-map;
+		};
+
+		/*
+		 * The rest of the text and the data: CMA, so the memory is the
+		 * kernel's (movable pages) while the IPU is off.
+		 */
+		ipu_cma_pool: ipu-cma@b9000000 {
+			compatible = "shared-dma-pool";
+			reg = <0xb9000000 0x3800000>;
+			reusable;
+		};
 	};
 
 	/* WLAN VSys Regulator */
@@ -859,6 +885,22 @@
  */
 &wdt3 {
 	status = "disabled";
+};
+
+/*
+ * The IPU (Ducati, two Cortex-M3) with the OMX firmware of the unit's Android
+ * system, which drives the IVA-HD. GPTIMER3 and 4 are its cores' tick timers
+ * (the vendor kernel's ipu_timers); it arms its watchdog only on GPTIMER9/11
+ * the host has enabled. Started on demand (echo start >
+ * /sys/class/remoteproc/remoteproc0/state): its text and data take up to
+ * 56 MiB of the CMA pool while it runs.
+ */
+&ipu {
+	status = "okay";
+	memory-region = <&ipu_ipc_memory>, <&ipu_cma_pool>;
+	ti,timers = <&timer3>, <&timer4>;
+	firmware-name = "ducati-m3.bin";
+	ti,no-auto-boot;
 };
 
 /*
