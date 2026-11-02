@@ -25,6 +25,16 @@ struct rpmsg_endpoint;
 struct rpmsg_device_ops;
 struct rpmsg_endpoint_ops;
 
+/*
+ * virtio rpmsg device feature (not a virtio standard one): the remote speaks
+ * TI's pre-upstream rpmsg (2011-2012 OMAP4 "sysbios-rpmsg" firmware): its
+ * message header is len, flags, src, dst, reserved, and it expects the host's
+ * resource manager on the hard-coded address RPMSG_TI_RESMGR_ADDR. Only
+ * omap_remoteproc offers it, for such firmware.
+ */
+#define VIRTIO_RPMSG_F_TI_LEGACY	23
+#define RPMSG_TI_RESMGR_ADDR		100
+
 /**
  * struct rpmsg_channel_info - channel info representation
  * @name: name of service
