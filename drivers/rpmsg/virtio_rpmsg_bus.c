@@ -48,6 +48,8 @@
  * @endpoints_lock: lock of the endpoints set
  * @sendq:	wait queue of sending contexts waiting for a tx buffers
  * @ti_legacy:	the remote speaks TI's pre-upstream rpmsg (VIRTIO_RPMSG_F_TI_LEGACY)
+ * @send_lock:	TI legacy only: one sender at a time, from taking a tx buffer
+ *		to the kick
  *
  * This structure stores the rpmsg state of a given virtio remote processor
  * device (there might be several virtio proc devices for each physical
@@ -66,6 +68,7 @@ struct virtproc_info {
 	struct mutex endpoints_lock;
 	wait_queue_head_t sendq;
 	bool ti_legacy;
+	struct mutex send_lock;
 };
 
 /* The feature bitmap for virtio rpmsg */
@@ -518,7 +521,7 @@ static void *get_a_tx_buf(struct virtproc_info *vrp)
 }
 
 /**
- * rpmsg_send_offchannel_raw() - send a message across to the remote processor
+ * __rpmsg_send_offchannel_raw() - send a message across to the remote processor
  * @rpdev: the rpmsg channel
  * @src: source address
  * @dst: destination address
@@ -551,9 +554,9 @@ static void *get_a_tx_buf(struct virtproc_info *vrp)
  *
  * Return: 0 on success and an appropriate error value on failure.
  */
-static int rpmsg_send_offchannel_raw(struct rpmsg_device *rpdev,
-				     u32 src, u32 dst,
-				     const void *data, int len, bool wait)
+static int __rpmsg_send_offchannel_raw(struct rpmsg_device *rpdev,
+				       u32 src, u32 dst,
+				       const void *data, int len, bool wait)
 {
 	struct virtio_rpmsg_channel *vch = to_virtio_rpmsg_channel(rpdev);
 	struct virtproc_info *vrp = vch->vrp;
@@ -635,6 +638,32 @@ static int rpmsg_send_offchannel_raw(struct rpmsg_device *rpdev,
 	virtqueue_kick(vrp->svq);
 out:
 	mutex_unlock(&vrp->tx_lock);
+	return err;
+}
+
+/*
+ * TI's pre-upstream firmware can take an avail ring entry as it was before
+ * the host's last write to it: then it runs the older message of the
+ * descriptor that entry held, and the new one is lost (seen with two senders
+ * at once, a few in a thousand messages). With one sender at a time from
+ * taking a tx buffer to adding it, the descriptor freed with the buffer is
+ * the one added again, into the entry it came from (the firmware uses them
+ * in order): every entry keeps its descriptor and such a read does no harm.
+ */
+static int rpmsg_send_offchannel_raw(struct rpmsg_device *rpdev,
+				     u32 src, u32 dst,
+				     const void *data, int len, bool wait)
+{
+	struct virtproc_info *vrp = to_virtio_rpmsg_channel(rpdev)->vrp;
+	int err;
+
+	if (!vrp->ti_legacy)
+		return __rpmsg_send_offchannel_raw(rpdev, src, dst, data, len,
+						   wait);
+
+	mutex_lock(&vrp->send_lock);
+	err = __rpmsg_send_offchannel_raw(rpdev, src, dst, data, len, wait);
+	mutex_unlock(&vrp->send_lock);
 	return err;
 }
 
@@ -894,6 +923,7 @@ static int rpmsg_probe(struct virtio_device *vdev)
 	idr_init(&vrp->endpoints);
 	mutex_init(&vrp->endpoints_lock);
 	mutex_init(&vrp->tx_lock);
+	mutex_init(&vrp->send_lock);
 	init_waitqueue_head(&vrp->sendq);
 
 	/* We expect two virtqueues, rx and tx (and in this order) */
