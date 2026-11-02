@@ -35,6 +35,7 @@
 #include <linux/reset.h>
 #include <linux/iommu.h>
 #include <linux/rpmsg.h>
+#include <linux/virtio_config.h>
 #include <linux/virtio_ids.h>
 #include <linux/virtio_ring.h>
 #include <linux/vmalloc.h>
@@ -1252,13 +1253,37 @@ static int omap_rprc_announce(struct omap_rproc *oproc)
  * its rpmsg bus had an endpoint for them, and were lost. So the cores leave
  * reset only after the virtio devices, from a subdevice at the end of the
  * list, as on the old host, whose firmware loading made them start last.
+ *
+ * Each virtio device also needs its driver by then, with its buffers on the
+ * vrings (DRIVER_OK): an announcement made before that is lost for good, so
+ * a virtio_rpmsg_bus that udev loads on the device's uevent would come too
+ * late. Loading the driver here binds the devices before modprobe returns.
  */
+static void omap_rprc_bind_vdevs(struct rproc *rproc)
+{
+	struct rproc_vdev *rvdev;
+	struct fw_rsc_vdev *rsc;
+
+	list_for_each_entry(rvdev, &rproc->rvdevs, node) {
+		rsc = (void *)rproc->table_ptr + rvdev->rsc_offset;
+		if (rsc->status & VIRTIO_CONFIG_S_DRIVER_OK)
+			continue;
+		/* the device's modalias; rproc virtio devices have vendor 0 */
+		request_module("virtio:d%08Xv%08X", rvdev->id, 0);
+		if (!(rsc->status & VIRTIO_CONFIG_S_DRIVER_OK))
+			dev_warn(rproc->dev.parent,
+				 "virtio device %u has no driver: the firmware's channels on it will be lost\n",
+				 rvdev->index);
+	}
+}
+
 static int omap_rprc_release(struct rproc_subdev *subdev)
 {
 	struct omap_rproc *oproc = container_of(subdev, struct omap_rproc,
 						rprc_release);
 	int ret;
 
+	omap_rprc_bind_vdevs(oproc->rproc);
 	ret = reset_control_deassert(oproc->reset);
 	if (ret)
 		dev_err(oproc->rproc->dev.parent,
