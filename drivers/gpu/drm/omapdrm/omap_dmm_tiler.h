@@ -7,6 +7,8 @@
 #ifndef OMAP_DMM_TILER_H
 #define OMAP_DMM_TILER_H
 
+#include <linux/omap-tiler.h>
+
 #include "omap_drv.h"
 #include "tcm.h"
 
