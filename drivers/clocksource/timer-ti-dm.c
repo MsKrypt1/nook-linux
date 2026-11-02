@@ -1466,7 +1466,18 @@ static int omap_dm_timer_probe(struct platform_device *pdev)
 		timer->fclk = ERR_PTR(-ENODEV);
 	}
 
-	if (!(timer->capability & OMAP_TIMER_ALWON)) {
+	/*
+	 * A CPU cluster PM transition means lost timer context only on OMAP3:
+	 * pm34xx.c signals one when the PER power domain, home of GPTIMER2-9,
+	 * goes off. OMAP4 signals one when the MPU subsystem loses context in
+	 * cpuidle (cpuidle44xx.c), and its timers, in the L4PER, ABE and WKUP
+	 * domains, keep theirs. Restoring it there writes a stale counter into
+	 * running timers: a remote processor's OS tick (the IPU's GPTIMER3 and
+	 * 4) is set back on every cluster wake-up and never reaches its first
+	 * overflow, and the firmware's own setup of the timer is undone.
+	 */
+	if (!(timer->capability & OMAP_TIMER_ALWON) &&
+	    of_machine_is_compatible("ti,omap3")) {
 		timer->nb.notifier_call = omap_timer_context_notifier;
 		cpu_pm_register_notifier(&timer->nb);
 	}
@@ -1536,7 +1547,7 @@ static void omap_dm_timer_remove(struct platform_device *pdev)
 	list_for_each_entry(timer, &omap_timer_list, node)
 		if (!strcmp(dev_name(&timer->pdev->dev),
 			    dev_name(&pdev->dev))) {
-			if (!(timer->capability & OMAP_TIMER_ALWON))
+			if (timer->nb.notifier_call)
 				cpu_pm_unregister_notifier(&timer->nb);
 			list_del(&timer->node);
 			ret = 0;
