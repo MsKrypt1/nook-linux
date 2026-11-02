@@ -1,0 +1,18 @@
+# SPDX-License-Identifier: GPL-2.0-only
+config VIDEO_OMAP4_DUCATI
+	tristate "OMAP4 IVA-HD video decoder (IPU firmware)"
+	depends on V4L_MEM2MEM_DRIVERS
+	depends on VIDEO_DEV
+	depends on ARCH_OMAP4 || COMPILE_TEST
+	depends on DRM_OMAP
+	depends on RPMSG && REMOTEPROC
+	select V4L2_MEM2MEM_DEV
+	select VIDEOBUF2_DMA_SG
+	help
+	  A V4L2 stateful H.264 decoder for the OMAP4 IVA-HD, through the
+	  OMX server of the IPU (Ducati) firmware ducati-m3.bin over rpmsg.
+	  The IPU runs only while a decoder instance needs it. Buffers are
+	  mapped for the IVA-HD through omapdrm's TILER.
+
+	  To compile this driver as a module, choose M here: the module
+	  will be called omap4-ducati-vdec.
