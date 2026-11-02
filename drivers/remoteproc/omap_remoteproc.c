@@ -576,11 +576,13 @@ static void omap_rproc_mbox_callback(struct mbox_client *client, void *data)
  * OMAP4 Android kernels of 2011-2012 loaded it, e.g. the Ducati OMX firmware
  * ducati-m3.bin. A text header, then sections, the first one the resource
  * table. Its carveouts have fixed physical addresses, which the firmware
- * uses. Its IPC layout is fixed as well: per core, 256 KiB of rpmsg buffers
- * and then two vrings of 256 entries, 4 KiB aligned, from the start of the
- * IPU_MEM_IPC_VRING carveout; the host announces each core's part by mailbox
- * (RP_MBOX_READY, then its physical address). Its rpmsg header has another
- * layout (VIRTIO_RPMSG_F_TI_LEGACY).
+ * uses: it reads the table at its device address to translate its addresses
+ * for the IVA-HD, which has no MMU, and takes an address the table does not
+ * hold as physical. Its IPC layout is fixed as well: per core, 256 KiB of
+ * rpmsg buffers and then two vrings of 256 entries, 4 KiB aligned, from the
+ * start of the IPU_MEM_IPC_VRING carveout; the host announces each core's
+ * part by mailbox (RP_MBOX_READY, then its physical address). Its rpmsg
+ * header has another layout (VIRTIO_RPMSG_F_TI_LEGACY).
  */
 #define RPRC_VERSION		2
 #define RPRC_MAX_CARVEOUTS	16
@@ -713,7 +715,7 @@ static int omap_rprc_sanity_check(struct rproc *rproc,
 			dev_err(dev, "RPRC image truncated at 0x%zx\n", off);
 			return -EINVAL;
 		}
-		if ((sec->type == RPRC_SEC_TEXT || sec->type == RPRC_SEC_DATA) &&
+		if (sec->type <= RPRC_SEC_DATA &&
 		    sec->da + sec->len > (u64)U32_MAX + 1) {
 			dev_err(dev, "RPRC section at da 0x%llx too large\n",
 				sec->da);
@@ -1179,7 +1181,12 @@ static int omap_rprc_copy(struct omap_rproc *oproc, u64 pa, const void *src,
 	return 0;
 }
 
-/* copy the text and data sections into their carveouts */
+/*
+ * Copy the resource table, text and data sections into their carveouts. The
+ * firmware needs its resource table in its memory too: without it, it hands
+ * the IVA-HD device addresses as physical ones (DATA at 0x80000000 is the
+ * host kernel's memory).
+ */
 static int omap_rprc_load(struct rproc *rproc, const struct firmware *fw)
 {
 	struct omap_rproc *oproc = rproc->priv;
@@ -1189,8 +1196,8 @@ static int omap_rprc_load(struct rproc *rproc, const struct firmware *fw)
 	int ret;
 
 	for_each_rprc_section(sec, fw) {
-		if (sec->type != RPRC_SEC_TEXT && sec->type != RPRC_SEC_DATA) {
-			/* the resource table, a page table and a signature for secure boot */
+		if (sec->type > RPRC_SEC_DATA) {
+			/* a page table and a signature for secure boot */
 			continue;
 		}
 
