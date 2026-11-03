@@ -899,9 +899,6 @@ static int omap_gem_pin_locked(struct drm_gem_object *obj)
 
 	if (!omap_gem_is_contiguous(omap_obj)) {
 		if (refcount_read(&omap_obj->pin_cnt) == 0) {
-
-			refcount_set(&omap_obj->pin_cnt, 1);
-
 			ret = omap_gem_attach_pages(obj);
 			if (ret)
 				return ret;
@@ -913,6 +910,13 @@ static int omap_gem_pin_locked(struct drm_gem_object *obj)
 						return ret;
 				}
 			}
+
+			/*
+			 * Only once pinned: a count left at 1 by a failed pin
+			 * would make every later pin succeed with no TILER
+			 * mapping and a DMA address of 0.
+			 */
+			refcount_set(&omap_obj->pin_cnt, 1);
 		} else {
 			refcount_inc(&omap_obj->pin_cnt);
 		}
