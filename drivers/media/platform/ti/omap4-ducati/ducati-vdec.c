@@ -79,6 +79,8 @@ struct ducati_buf {
 	u32 remote;			/* its buffer header while registered */
 	bool pending;			/* ours, not sent */
 	bool in_fw;			/* the component's */
+	bool filled;			/* CAPTURE: a picture since QBUF */
+	bool cpu_sync;			/* CAPTURE: invalidate it at DQBUF */
 };
 
 /* our own buffers: port 1 before the stream's format, the input EOS buffer */
@@ -753,6 +755,7 @@ static void ducati_fbd(struct ducati_ctx *ctx, u32 hdr, u32 len, u32 off,
 	}
 	b->vb.field = V4L2_FIELD_NONE;
 	b->vb.sequence = ctx->seq[Q_CAP]++;
+	b->filled = !!len;
 	vb2_set_plane_payload(&b->vb.vb2_buf, 0, len ? ctx->cap_alloc.stride *
 			      ctx->cap_alloc.v4l2_height * 3 / 2 : 0);
 	if ((oflags & OMX_BUFFERFLAG_EOS) && !len) {
@@ -1236,7 +1239,7 @@ static void ducati_fail_buf(struct ducati_ctx *ctx, struct ducati_buf *b)
 	spin_unlock_irq(&ctx->slock);
 }
 
-static void ducati_sync_out(struct vb2_buffer *vb, u32 left);
+static void ducati_sync_payload(struct vb2_buffer *vb, u32 left);
 
 /*
  * The first IDR for a new component, which has not seen the stream's SPS
@@ -1253,7 +1256,7 @@ static u32 ducati_add_headers(struct ducati_ctx *ctx, struct vb2_buffer *vb,
 	memcpy(va, ctx->hdrs, n);
 	len += n;
 	vb2_set_plane_payload(vb, 0, len);
-	ducati_sync_out(vb, len);
+	ducati_sync_payload(vb, len);
 	return len;
 }
 
@@ -1426,6 +1429,17 @@ static int ducati_buf_init(struct vb2_buffer *vb)
 		goto err_guard;
 	b->da = b->tb.da + (q == Q_CAP ? ctx->cap_alloc.shift : 0);
 	b->remote = 0;
+	if (q == Q_CAP) {
+		/*
+		 * The pages come zeroed through the CPU caches and vb2 maps
+		 * them without a sync: they are cleaned of that here, once.
+		 * The CPU never writes into a picture, so no QBUF needs to
+		 * do it again (ducati_buf_prepare).
+		 */
+		dma_sync_sgtable_for_device(vb->vb2_queue->dev, sgt,
+					    vb->vb2_queue->dma_dir);
+		vb->skip_cache_sync_on_prepare = 1;
+	}
 	b->pending = b->in_fw = false;
 	spin_lock_irq(&ctx->slock);
 	ctx->bufs[q][vb->index] = b;
@@ -1472,11 +1486,14 @@ static int ducati_buf_out_validate(struct vb2_buffer *vb)
 }
 
 /*
- * The component reads only the payload of an OUTPUT buffer: clean that
- * from the CPU caches, not the whole buffer as vb2 would (1.5 MB for a
- * 1080p stream from FFmpeg, ~5 ms a frame).
+ * The CPU caches are synced over a buffer's payload only, not over the
+ * whole buffer as vb2 would: the component reads only the payload of an
+ * OUTPUT buffer (1.5 MB for a 1080p stream from FFmpeg, ~5 ms a frame),
+ * and a client reads only the picture of a CAPTURE one. Each cache line
+ * takes an operation in L1 and one in the PL310: ~9 ms for the 3.5 MB of
+ * a 1080p picture at 800 MHz.
  */
-static void ducati_sync_out(struct vb2_buffer *vb, u32 left)
+static void ducati_sync_payload(struct vb2_buffer *vb, u32 left)
 {
 	struct device *dev = vb->vb2_queue->dev;
 	struct sg_table *sgt = vb2_dma_sg_plane_desc(vb, 0);
@@ -1488,19 +1505,53 @@ static void ducati_sync_out(struct vb2_buffer *vb, u32 left)
 		if (!left)
 			break;
 		n = min_t(u32, left, sg_dma_len(sg));
-		dma_sync_single_for_device(dev, sg_dma_address(sg), n,
-					   DMA_TO_DEVICE);
+		if (V4L2_TYPE_IS_OUTPUT(vb->type))
+			dma_sync_single_for_device(dev, sg_dma_address(sg), n,
+						   DMA_TO_DEVICE);
+		else
+			dma_sync_single_for_cpu(dev, sg_dma_address(sg), n,
+						DMA_FROM_DEVICE);
 		left -= n;
 	}
 }
 
+/*
+ * vb2 would invalidate a whole CAPTURE buffer in vb2_buffer_done(), which
+ * runs in the mailbox's IRQ thread under slock: ~9 ms a 1080p picture with
+ * IRQs off, a stall for the audio and dropped frames. A picture is
+ * invalidated at DQBUF instead, in the client's thread (ducati_buf_finish),
+ * and not at all if the client won't read it through the CPU
+ * (V4L2_BUF_FLAG_NO_CACHE_INVALIDATE: the frame goes to the GPU or the
+ * display as a dma-buf, whose own CPU access syncs it).
+ */
 static int ducati_buf_prepare(struct vb2_buffer *vb)
 {
-	if (!V4L2_TYPE_IS_OUTPUT(vb->type))
+	struct ducati_buf *b = container_of(to_vb2_v4l2_buffer(vb),
+					    struct ducati_buf, vb);
+
+	if (!V4L2_TYPE_IS_OUTPUT(vb->type)) {
+		b->filled = false;
+		b->cpu_sync = !vb->skip_cache_sync_on_finish;
+		vb->skip_cache_sync_on_finish = 1;
 		return 0;
+	}
 	vb->skip_cache_sync_on_prepare = 1;
-	ducati_sync_out(vb, vb2_get_plane_payload(vb, 0));
+	ducati_sync_payload(vb, vb2_get_plane_payload(vb, 0));
 	return 0;
+}
+
+static void ducati_buf_finish(struct vb2_buffer *vb)
+{
+	struct ducati_buf *b = container_of(to_vb2_v4l2_buffer(vb),
+					    struct ducati_buf, vb);
+
+	if (V4L2_TYPE_IS_OUTPUT(vb->type))
+		return;
+	if (b->filled && b->cpu_sync)
+		ducati_sync_payload(vb, vb2_get_plane_payload(vb, 0));
+	b->filled = false;
+	/* vb2 only ever sets it from a hint: the next QBUF's decides */
+	vb->skip_cache_sync_on_finish = 0;
 }
 
 static void ducati_buf_queue(struct vb2_buffer *vb)
@@ -1600,6 +1651,7 @@ static const struct vb2_ops ducati_qops = {
 	.buf_cleanup = ducati_buf_cleanup,
 	.buf_out_validate = ducati_buf_out_validate,
 	.buf_prepare = ducati_buf_prepare,
+	.buf_finish = ducati_buf_finish,
 	.buf_queue = ducati_buf_queue,
 	.start_streaming = ducati_start_streaming,
 	.stop_streaming = ducati_stop_streaming,
@@ -1622,6 +1674,8 @@ static int ducati_queue_init(void *priv, struct vb2_queue *src,
 		q[i]->mem_ops = &vb2_dma_sg_memops;
 		q[i]->timestamp_flags = V4L2_BUF_FLAG_TIMESTAMP_COPY;
 		q[i]->lock = &ctx->lock;
+		/* V4L2_BUF_FLAG_NO_CACHE_INVALIDATE for a picture */
+		q[i]->allow_cache_hints = i;
 		q[i]->dev = &ctx->dev->pdev->dev;
 		q[i]->max_num_buffers = DUCATI_MAX_BUFS;
 		ret = vb2_queue_init(q[i]);
