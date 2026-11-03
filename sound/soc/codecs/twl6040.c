@@ -1010,8 +1010,74 @@ static void twl6040_mute_path(struct snd_soc_component *component, enum twl6040_
 	}
 }
 
+/*
+ * Switches a path's output drivers off ahead of its mute, and says whether any
+ * was on. Reads the DAPM state from the cache and writes the chip only, as
+ * twl6040_mute_path() does.
+ */
+static bool twl6040_drivers_off(struct snd_soc_component *component,
+				enum twl6040_dai_id id)
+{
+	struct twl6040 *twl6040 = to_twl6040(component);
+	int earctl, lctl, rctl;
+
+	switch (id) {
+	case TWL6040_DAI_DL1:
+		earctl = twl6040_read(component, TWL6040_REG_EARCTL);
+		lctl = twl6040_read(component, TWL6040_REG_HSLCTL);
+		rctl = twl6040_read(component, TWL6040_REG_HSRCTL);
+		if (!(earctl & 0x01) && !((lctl | rctl) & TWL6040_HSDRVENA))
+			return false;
+
+		twl6040_reg_write(twl6040, TWL6040_REG_EARCTL, earctl & ~0x01);
+		twl6040_reg_write(twl6040, TWL6040_REG_HSLCTL,
+				  lctl & ~TWL6040_HSDRVENA);
+		twl6040_reg_write(twl6040, TWL6040_REG_HSRCTL,
+				  rctl & ~TWL6040_HSDRVENA);
+		return true;
+	case TWL6040_DAI_DL2:
+		lctl = twl6040_read(component, TWL6040_REG_HFLCTL);
+		rctl = twl6040_read(component, TWL6040_REG_HFRCTL);
+		if (!((lctl | rctl) & TWL6040_HFDRVENA))
+			return false;
+
+		twl6040_reg_write(twl6040, TWL6040_REG_HFLCTL,
+				  lctl & ~TWL6040_HFDRVENA);
+		twl6040_reg_write(twl6040, TWL6040_REG_HFRCTL,
+				  rctl & ~TWL6040_HFDRVENA);
+		return true;
+	default:
+		return false;
+	}
+}
+
 static int twl6040_mute_stream(struct snd_soc_dai *dai, int mute, int direction)
 {
+	bool drivers = false;
+
+	/*
+	 * The drivers go off first, and the DACs and PGAs some time after: a
+	 * handsfree path switched off in one write pops on the speakers, and
+	 * so does one with its DAC and PGA off right after the driver, both
+	 * with the downlink still running. 50 ms apart they don't.
+	 */
+	if (mute) {
+		switch (dai->id) {
+		case TWL6040_DAI_LEGACY:
+			drivers = twl6040_drivers_off(dai->component, TWL6040_DAI_DL1);
+			drivers |= twl6040_drivers_off(dai->component, TWL6040_DAI_DL2);
+			break;
+		case TWL6040_DAI_DL1:
+		case TWL6040_DAI_DL2:
+			drivers = twl6040_drivers_off(dai->component, dai->id);
+			break;
+		default:
+			break;
+		}
+		if (drivers)
+			msleep(50);
+	}
+
 	switch (dai->id) {
 	case TWL6040_DAI_LEGACY:
 		twl6040_mute_path(dai->component, TWL6040_DAI_DL1, mute);
