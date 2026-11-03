@@ -11,6 +11,9 @@
  */
 
 #include <linux/init.h>
+#include <linux/dma-mapping.h>
+#include <linux/dmaengine.h>
+#include <linux/sizes.h>
 #include <linux/module.h>
 #include <linux/platform_device.h>
 #include <linux/interrupt.h>
@@ -57,7 +60,14 @@ struct omap_mcpdm {
 	int pm_active_count;
 
 	struct snd_dmaengine_dai_dma_data dma_data[2];
+
+	/* Zeros for the downlink between a stream's stop and its hw_free */
+	void *zero_buf;
+	dma_addr_t zero_dma;
+	struct dma_chan *silence_chan;	/* channel feeding them, or NULL */
 };
+
+#define MCPDM_ZERO_BYTES	SZ_4K
 
 /*
  * Stream DMA parameters
@@ -245,6 +255,93 @@ static irqreturn_t omap_mcpdm_irq_handler(int irq, void *dev_id)
 	return IRQ_HANDLED;
 }
 
+/*
+ * Silence between a playback stream's stop and its hw_free.
+ *
+ * Trigger STOP ends the playback DMA, but the codec powers its outputs down only
+ * in hw_free, through its mute_stream (over I2C, which the atomic trigger can't
+ * do), a millisecond or more later. In between the downlink FIFO runs empty: the
+ * downlink stops with it (an empty downlink FIFO is an error the path has to be
+ * reset from, TRM 24.6.4.9), and every TWL6040 output still on pops. Zero
+ * samples are valid silence, so from STOP on the same DMA channel goes on
+ * feeding the FIFO zeros from a buffer of its own, until hw_free (after the
+ * codec's mute) or the next START. The component's trigger order (LDC) runs
+ * the DAI trigger after the DMA's at STOP and before it at START.
+ */
+static void omap_mcpdm_silence_start(struct omap_mcpdm *mcpdm,
+				     struct snd_pcm_substream *substream)
+{
+	struct dma_chan *chan = snd_dmaengine_pcm_get_chan(substream);
+	struct dma_async_tx_descriptor *desc;
+	size_t packet, period;
+
+	if (!mcpdm->zero_buf || !chan || READ_ONCE(mcpdm->silence_chan))
+		return;
+
+	/* The channel moves maxburst words per DMA request: whole packets */
+	packet = mcpdm->dma_data[SNDRV_PCM_STREAM_PLAYBACK].maxburst *
+		 (snd_pcm_format_physical_width(substream->runtime->format) / 8);
+	if (!packet || packet > MCPDM_ZERO_BYTES / 2)
+		return;
+	period = MCPDM_ZERO_BYTES / 2 / packet * packet;
+
+	desc = dmaengine_prep_dma_cyclic(chan, mcpdm->zero_dma, 2 * period,
+					 period, DMA_MEM_TO_DEV, DMA_CTRL_ACK);
+	if (!desc)
+		return;
+
+	dmaengine_submit(desc);
+	dma_async_issue_pending(chan);
+	WRITE_ONCE(mcpdm->silence_chan, chan);
+}
+
+static void omap_mcpdm_silence_stop(struct omap_mcpdm *mcpdm, bool sync)
+{
+	struct dma_chan *chan = xchg(&mcpdm->silence_chan, NULL);
+
+	if (!chan)
+		return;
+
+	if (sync)
+		dmaengine_terminate_sync(chan);
+	else
+		dmaengine_terminate_async(chan);
+}
+
+static int omap_mcpdm_trigger(struct snd_pcm_substream *substream, int cmd,
+			      struct snd_soc_dai *dai)
+{
+	struct omap_mcpdm *mcpdm = snd_soc_dai_get_drvdata(dai);
+
+	if (substream->stream != SNDRV_PCM_STREAM_PLAYBACK)
+		return 0;
+
+	switch (cmd) {
+	case SNDRV_PCM_TRIGGER_START:
+		/* before the stream's DMA starts on the same channel */
+		omap_mcpdm_silence_stop(mcpdm, false);
+		break;
+	case SNDRV_PCM_TRIGGER_STOP:
+		/* after the stream's DMA ended */
+		omap_mcpdm_silence_start(mcpdm, substream);
+		break;
+	default:
+		break;
+	}
+
+	return 0;
+}
+
+static int omap_mcpdm_hw_free(struct snd_pcm_substream *substream,
+			      struct snd_soc_dai *dai)
+{
+	/* The codec's outputs are off by now: soc_pcm_hw_clean mutes first */
+	if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK)
+		omap_mcpdm_silence_stop(snd_soc_dai_get_drvdata(dai), true);
+
+	return 0;
+}
+
 static int omap_mcpdm_dai_startup(struct snd_pcm_substream *substream,
 				  struct snd_soc_dai *dai)
 {
@@ -265,6 +362,9 @@ static void omap_mcpdm_dai_shutdown(struct snd_pcm_substream *substream,
 	int tx = (substream->stream == SNDRV_PCM_STREAM_PLAYBACK);
 	int stream1 = tx ? SNDRV_PCM_STREAM_PLAYBACK : SNDRV_PCM_STREAM_CAPTURE;
 	int stream2 = tx ? SNDRV_PCM_STREAM_CAPTURE : SNDRV_PCM_STREAM_PLAYBACK;
+
+	if (tx)
+		omap_mcpdm_silence_stop(mcpdm, true);
 
 	guard(mutex)(&mcpdm->mutex);
 
@@ -451,7 +551,9 @@ static const struct snd_soc_dai_ops omap_mcpdm_dai_ops = {
 	.startup	= omap_mcpdm_dai_startup,
 	.shutdown	= omap_mcpdm_dai_shutdown,
 	.hw_params	= omap_mcpdm_dai_hw_params,
+	.hw_free	= omap_mcpdm_hw_free,
 	.prepare	= omap_mcpdm_prepare,
+	.trigger	= omap_mcpdm_trigger,
 	.probe_order	= SND_SOC_COMP_ORDER_LATE,
 	.remove_order	= SND_SOC_COMP_ORDER_EARLY,
 };
@@ -460,6 +562,9 @@ static const struct snd_soc_dai_ops omap_mcpdm_dai_ops = {
 static int omap_mcpdm_suspend(struct snd_soc_component *component)
 {
 	struct omap_mcpdm *mcpdm = snd_soc_component_get_drvdata(component);
+
+	/* A stopped stream's silence (the codec is muted by now) */
+	omap_mcpdm_silence_stop(mcpdm, true);
 
 	if (snd_soc_component_active(component)) {
 		omap_mcpdm_stop(mcpdm);
@@ -522,6 +627,8 @@ static const struct snd_soc_component_driver omap_mcpdm_component = {
 	.name			= "omap-mcpdm",
 	.suspend		= omap_mcpdm_suspend,
 	.resume			= omap_mcpdm_resume,
+	.trigger_start		= SND_SOC_TRIGGER_ORDER_LDC,
+	.trigger_stop		= SND_SOC_TRIGGER_ORDER_LDC,
 	.legacy_dai_naming	= 1,
 };
 
@@ -567,6 +674,15 @@ static int asoc_mcpdm_probe(struct platform_device *pdev)
 		return mcpdm->irq;
 
 	mcpdm->dev = &pdev->dev;
+
+	/*
+	 * The downlink's silence. Allocated for the McPDM device: the sDMA has
+	 * no IOMMU, so its addresses are the same for the DMA controller.
+	 */
+	mcpdm->zero_buf = dmam_alloc_coherent(&pdev->dev, MCPDM_ZERO_BYTES,
+					      &mcpdm->zero_dma, GFP_KERNEL);
+	if (!mcpdm->zero_buf)
+		dev_warn(&pdev->dev, "no buffer for silence: streams may pop at their end\n");
 
 	ret =  devm_snd_soc_register_component(&pdev->dev,
 					       &omap_mcpdm_component,
