@@ -27,10 +27,10 @@
 	 * and use CLKOUTX2_M3 with the DCC. Those two are boost OPPs: off
 	 * until /sys/devices/system/cpu/cpufreq/boost is set.
 	 *
-	 * OPPNTSB (1497.6 MHz, 1.387 V) is left out. SWPU325 requires ABB
-	 * there, and the only mode the TRM gives for it is Set2 (RBB), which
-	 * needs the MPU_RBB_NTSB trim (TRM §3.8.4.3.3). Without ABB, AVS on a
-	 * warm 1.5 GHz part settles above the nominal.
+	 * OPPNTSB (1497.6 MHz, the same DPLL path) exists only on the
+	 * high-performance part (CONTROL_STD_FUSE_PROD_ID_1 SILICON_TYPE
+	 * 0x2, TRM Table 1-8), so a board that has one adds it. Its ABB
+	 * mode: see abb_mpu.
 	 */
 	cpu_opp_table: opp-table {
 		compatible = "operating-points-v2";
@@ -95,7 +95,13 @@
 			 * ABB per TRM §3.8.4.3 and Table 3-363: RBB (Set2) at
 			 * TURBO/NITRO/NTSB when CONTROL_STD_FUSE_OPP_DPLL_1
 			 * says it is trimmed; otherwise FBB (Set1) at NITRO
-			 * and bypass at TURBO and NTSB.
+			 * and bypass at TURBO.
+			 *
+			 * NTSB without the RBB trim: the TRM gives no mode,
+			 * but SWPU325 requires ABB there (Table 2-1 note 3).
+			 * FBB, as at NITRO, is what TI's kernel uses for an
+			 * untrimmed part; in bypass, AVS settles above the
+			 * nominal once the chip is warm.
 			 */
 			ti,abb_info = <
 				/*uV		ABB	efuse	rbb_m		fbb_m	vset_m*/
@@ -103,7 +109,7 @@
 				1200000		0	0		0			0		0
 				1312000		0	0		0x100000	0		0
 				1375000		1	0		0x400000	0		0
-				1387000		0	0		0x800000	0		0
+				1387000		1	0		0x800000	0		0
 			>;
 		};
 
