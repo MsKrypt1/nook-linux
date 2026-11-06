@@ -248,7 +248,7 @@
 		regulator-name = "vdd_mpu";
 		ti,voltdm = "mpu";
 		regulator-min-microvolt = <1037000>;
-		regulator-max-microvolt = <1375000>;
+		regulator-max-microvolt = <1387000>;
 		regulator-boot-on;
 		regulator-always-on;
 		vbb-supply = <&abb_mpu>;
@@ -334,6 +334,20 @@
 
 &cpu0 {
 	cpu0-supply = <&vdd_mpu>;
+};
+
+/*
+ * This unit's OMAP4470 is the high-performance part (STD_FUSE_PROD_ID_1
+ * SILICON_TYPE 0x2, 1.5 GHz; B&N's kernel enabled the OPP on that bit):
+ * MPU OPPNTSB from SWPU325 Tables 2-1/2-2, M/N 39/1 (TRM Table 3-88).
+ */
+&cpu_opp_table {
+	opp-1497600000 {
+		opp-hz = /bits/ 64 <1497600000>;
+		opp-microvolt = <1387000>;
+		clock-latency-ns = <300000>;
+		turbo-mode;
+	};
 };
 
 /*
