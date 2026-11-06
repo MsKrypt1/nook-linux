@@ -187,11 +187,19 @@ static void sr1p5_calibrate(struct sr1p5 *d)
 		goto out_nominal;
 	}
 
+	/*
+	 * Compare steps, not microvolts: a nominal between two steps starts
+	 * the loop on the step above it (MPU OPPNTSB: 1.387 V -> 1.3926 V,
+	 * also the VP's maximum), so a loop that stays there is not above it.
+	 * A settled loop at a VP limit is clamped only if its error is still
+	 * outside the error limits.
+	 */
 	uv = voltdm->pmic->vsel_to_uv(vsel);
-	if (uv > nominal)
+	if (vsel > voltdm->pmic->uv_to_vsel(nominal))
 		pr_warn("vdd_%s: SR class 1.5: %lu uV is above the nominal %lu uV\n",
 			voltdm->name, uv, nominal);
-	if (vsel == vmin || vsel == vmax)
+	if ((vsel == vmin && (!settled || err < emin * 10)) ||
+	    (vsel == vmax && (!settled || err > emax * 10)))
 		pr_warn("vdd_%s: SR class 1.5: stopped at the VP limit\n",
 			voltdm->name);
 
