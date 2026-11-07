@@ -594,6 +594,9 @@ static int policy_set_boost(struct cpufreq_policy *policy, bool enable)
 		return ret;
 	}
 
+	blocking_notifier_call_chain(&cpufreq_policy_notifier_list,
+				     CPUFREQ_BOOST_POLICY, policy);
+
 	return 0;
 }
 

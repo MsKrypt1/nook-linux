@@ -383,6 +383,8 @@ void acpi_processor_init_invariance_cppc(void)
 
 #ifdef CONFIG_CPU_FREQ
 static cpumask_var_t cpus_to_visit;
+/* The CPU capacities were normalized with capacity_freq_ref (capacity-dmips-mhz). */
+static bool capacity_from_freq_ref;
 static void parsing_done_workfn(struct work_struct *work);
 static DECLARE_WORK(parsing_done_work, parsing_done_workfn);
 
@@ -412,6 +414,7 @@ init_cpu_capacity_callback(struct notifier_block *nb,
 	if (cpumask_empty(cpus_to_visit)) {
 		if (raw_capacity) {
 			topology_normalize_cpu_scale();
+			capacity_from_freq_ref = true;
 			schedule_work(&update_topology_flags_work);
 			free_raw_capacity();
 		}
@@ -424,6 +427,36 @@ init_cpu_capacity_callback(struct notifier_block *nb,
 
 static struct notifier_block init_cpu_capacity_notifier = {
 	.notifier_call = init_cpu_capacity_callback,
+};
+
+/*
+ * A boost toggle moves cpuinfo.max_freq. A policy created with boost off took its reference
+ * frequency without the boost frequencies, and schedutil never asks for more than the reference,
+ * so boost enabled after boot went unused. Unless the CPU capacities were normalized with it
+ * (capacity-dmips-mhz), the reference only scales frequency invariance and schedutil's
+ * requests: let it follow cpuinfo.max_freq.
+ */
+static int boost_freq_ref_callback(struct notifier_block *nb, unsigned long val, void *data)
+{
+	struct cpufreq_policy *policy = data;
+	int cpu;
+
+	if (val != CPUFREQ_BOOST_POLICY || capacity_from_freq_ref)
+		return 0;
+
+	for_each_cpu(cpu, policy->related_cpus) {
+		per_cpu(capacity_freq_ref, cpu) = policy->cpuinfo.max_freq;
+		freq_inv_set_max_ratio(cpu, per_cpu(capacity_freq_ref, cpu) * HZ_PER_KHZ);
+	}
+	pr_debug("cpu_capacity: CPUs [%*pbl] reference frequency %u kHz (boost %d)\n",
+		 cpumask_pr_args(policy->related_cpus), policy->cpuinfo.max_freq,
+		 policy->boost_enabled);
+
+	return 0;
+}
+
+static struct notifier_block boost_freq_ref_notifier = {
+	.notifier_call = boost_freq_ref_callback,
 };
 
 static int __init register_cpufreq_notifier(void)
@@ -445,10 +478,12 @@ static int __init register_cpufreq_notifier(void)
 	ret = cpufreq_register_notifier(&init_cpu_capacity_notifier,
 					CPUFREQ_POLICY_NOTIFIER);
 
-	if (ret)
+	if (ret) {
 		free_cpumask_var(cpus_to_visit);
+		return ret;
+	}
 
-	return ret;
+	return cpufreq_register_notifier(&boost_freq_ref_notifier, CPUFREQ_POLICY_NOTIFIER);
 }
 core_initcall(register_cpufreq_notifier);
 
