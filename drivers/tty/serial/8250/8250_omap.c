@@ -145,6 +145,10 @@ struct omap8250_priv {
 	u32 calc_latency;
 	struct pm_qos_request pm_qos_request;
 	struct work_struct qos_work;
+	struct delayed_work qos_idle_work;
+	unsigned long qos_last_busy;	/* jiffies of the last interrupt */
+	bool qos_on_activity;		/* auto-RTS: the constraint only while busy */
+	bool qos_busy;
 	struct uart_8250_dma omap8250_dma;
 	spinlock_t rx_dma_lock;
 	bool rx_dma_broken;
@@ -531,9 +535,19 @@ static void omap_8250_set_termios(struct uart_port *port,
 
 	omap_8250_set_termios_atomic(port, termios, old, baud);
 
-	/* calculate wakeup latency constraint */
+	/*
+	 * Wakeup latency constraint: the time to fill the 64-byte RX FIFO, so
+	 * that it can't overrun while the CPU wakes up from an idle state. With
+	 * auto-RTS the UART deasserts RTS at the FIFO's halt level (TCR) and the
+	 * sender stops instead, so the constraint only keeps the FIFOs serviced
+	 * at the line rate while data flows: it is held from the port's
+	 * interrupts until the port was idle for OMAP8250_QOS_IDLE_MS. Held for
+	 * as long as the port is open, at Bluetooth's 3 Mbaud (170 us) it kept
+	 * an OMAP4 out of its MPU retention states with nothing to do.
+	 */
 	priv->calc_latency = USEC_PER_SEC * 64 * 8 / baud;
 	priv->latency = priv->calc_latency;
+	WRITE_ONCE(priv->qos_on_activity, !!(port->status & UPSTAT_AUTORTS));
 
 	schedule_work(&priv->qos_work);
 
@@ -629,12 +643,45 @@ static void omap_serial_fill_features_erratas(struct uart_8250_port *up,
 		priv->habit &= ~UART_HAS_RHR_IT_DIS;
 }
 
+#define OMAP8250_QOS_IDLE_MS	50
+
+/* The one place that applies the constraint, so that updates can't overtake each other */
 static void omap8250_uart_qos_work(struct work_struct *work)
 {
 	struct omap8250_priv *priv;
+	s32 latency;
 
 	priv = container_of(work, struct omap8250_priv, qos_work);
-	cpu_latency_qos_update_request(&priv->pm_qos_request, priv->latency);
+	latency = READ_ONCE(priv->latency);
+	if (READ_ONCE(priv->qos_on_activity) && !READ_ONCE(priv->qos_busy))
+		latency = PM_QOS_CPU_LATENCY_DEFAULT_VALUE;
+	cpu_latency_qos_update_request(&priv->pm_qos_request, latency);
+}
+
+static void omap8250_qos_idle_work(struct work_struct *work)
+{
+	struct omap8250_priv *priv = container_of(to_delayed_work(work),
+						  struct omap8250_priv, qos_idle_work);
+	unsigned long idle_at = READ_ONCE(priv->qos_last_busy) +
+				msecs_to_jiffies(OMAP8250_QOS_IDLE_MS);
+
+	if (time_before(jiffies, idle_at)) {
+		schedule_delayed_work(&priv->qos_idle_work, idle_at - jiffies);
+		return;
+	}
+	WRITE_ONCE(priv->qos_busy, false);
+	schedule_work(&priv->qos_work);
+}
+
+/* An interrupt on an auto-RTS port: hold the constraint while it is busy */
+static void omap8250_qos_busy(struct omap8250_priv *priv)
+{
+	WRITE_ONCE(priv->qos_last_busy, jiffies);
+	if (!READ_ONCE(priv->qos_on_activity) || READ_ONCE(priv->qos_busy))
+		return;
+	WRITE_ONCE(priv->qos_busy, true);
+	schedule_work(&priv->qos_work);
+	schedule_delayed_work(&priv->qos_idle_work, msecs_to_jiffies(OMAP8250_QOS_IDLE_MS));
 }
 
 #ifdef CONFIG_SERIAL_8250_DMA
@@ -656,6 +703,7 @@ static irqreturn_t omap8250_irq(int irq, void *dev_id)
 		priv->latency = priv->calc_latency;
 		schedule_work(&priv->qos_work);
 	}
+	omap8250_qos_busy(priv);
 
 #ifdef CONFIG_SERIAL_8250_DMA
 	if (up->dma) {
@@ -782,6 +830,9 @@ static void omap_8250_shutdown(struct uart_port *port)
 
 	guard(serial8250_rpm)(up);
 
+	cancel_delayed_work_sync(&priv->qos_idle_work);
+	WRITE_ONCE(priv->qos_busy, false);
+	schedule_work(&priv->qos_work);
 	flush_work(&priv->qos_work);
 	if (up->dma)
 		omap_8250_rx_dma_flush(up);
@@ -1527,6 +1578,7 @@ static int omap8250_probe(struct platform_device *pdev)
 	priv->calc_latency = PM_QOS_CPU_LATENCY_DEFAULT_VALUE;
 	cpu_latency_qos_add_request(&priv->pm_qos_request, priv->latency);
 	INIT_WORK(&priv->qos_work, omap8250_uart_qos_work);
+	INIT_DELAYED_WORK(&priv->qos_idle_work, omap8250_qos_idle_work);
 
 	spin_lock_init(&priv->rx_dma_lock);
 
@@ -1621,6 +1673,7 @@ err:
 	dev_pm_clear_wake_irq(&pdev->dev);
 	pm_runtime_dont_use_autosuspend(&pdev->dev);
 	pm_runtime_put_sync(&pdev->dev);
+	cancel_delayed_work_sync(&priv->qos_idle_work);
 	flush_work(&priv->qos_work);
 	pm_runtime_disable(&pdev->dev);
 	cpu_latency_qos_remove_request(&priv->pm_qos_request);
@@ -1644,6 +1697,7 @@ static void omap8250_remove(struct platform_device *pdev)
 	dev_pm_clear_wake_irq(&pdev->dev);
 	pm_runtime_dont_use_autosuspend(&pdev->dev);
 	pm_runtime_put_sync(&pdev->dev);
+	cancel_delayed_work_sync(&priv->qos_idle_work);
 	flush_work(&priv->qos_work);
 	pm_runtime_disable(&pdev->dev);
 	cpu_latency_qos_remove_request(&priv->pm_qos_request);
