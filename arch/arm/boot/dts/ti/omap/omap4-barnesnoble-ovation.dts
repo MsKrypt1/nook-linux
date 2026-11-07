@@ -4,7 +4,6 @@
  */
 /dts-v1/;
 
-#include <dt-bindings/input/gpio-keys.h>
 #include <dt-bindings/input/input.h>
 #include "omap4470.dtsi"
 #include "omap4-mcpdm.dtsi"
@@ -201,11 +200,14 @@
 	 * Home (gpmc_ad8.gpio_32, external pull-up) and the hall sensor for
 	 * the cover (fref_clk3_out.gpio_wk31, push-pull), both active low
 	 * (vendor board-ovation-buttons.c; u-boot reads Home low when
-	 * pressed). The cover wakes the tablet only when it is opened.
+	 * pressed).
 	 *
 	 * GPIO2 loses its logic in suspend (L4PER OSWR), so Home wakes the
 	 * tablet through its pad's IO wakeup instead, as the vendor kernel
-	 * did. GPIO1 is in the always-on WKUP domain.
+	 * did. The hall sensor (GPIO1, always-on WKUP domain) is no wakeup
+	 * source: no cover is made for this tablet any more, and a pulse on
+	 * its line shorter than the debounce, with no lid event, woke the
+	 * tablet after 8 h of suspend on a charger.
 	 */
 	gpio-keys {
 		compatible = "gpio-keys";
@@ -226,8 +228,6 @@
 			gpios = <&gpio1 31 GPIO_ACTIVE_LOW>;
 			linux,input-type = <EV_SW>;
 			linux,code = <SW_LID>;
-			wakeup-source;
-			wakeup-event-action = <EV_ACT_DEASSERTED>;
 		};
 	};
 
