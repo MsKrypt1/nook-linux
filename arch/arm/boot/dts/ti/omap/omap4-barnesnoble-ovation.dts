@@ -205,9 +205,7 @@
 	 * GPIO2 loses its logic in suspend (L4PER OSWR), so Home wakes the
 	 * tablet through its pad's IO wakeup instead, as the vendor kernel
 	 * did. The hall sensor (GPIO1, always-on WKUP domain) is no wakeup
-	 * source: no cover is made for this tablet any more, and a pulse on
-	 * its line shorter than the debounce, with no lid event, woke the
-	 * tablet after 8 h of suspend on a charger.
+	 * source: no cover is made for this tablet any more.
 	 */
 	gpio-keys {
 		compatible = "gpio-keys";
