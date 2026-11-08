@@ -15,6 +15,7 @@
  */
 
 #include <linux/debugfs.h>
+#include <linux/devm-helpers.h>
 #include <linux/delay.h>
 #include <linux/gpio/consumer.h>
 #include <linux/i2c.h>
@@ -25,6 +26,7 @@
 #include <linux/irq.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
+#include <linux/of.h>
 #include <linux/property.h>
 #include <linux/ratelimit.h>
 #include <linux/regmap.h>
@@ -33,6 +35,8 @@
 #include <linux/uaccess.h>
 
 #include <linux/unaligned.h>
+
+#include <drm/drm_panel.h>
 
 #define WORK_REGISTER_THRESHOLD		0x00
 #define WORK_REGISTER_REPORT_RATE	0x08
@@ -127,6 +131,17 @@ struct edt_ft5x06_ts_data {
 	struct mutex mutex;
 	bool factory_mode;
 	enum edt_pmode suspend_mode;
+
+	/*
+	 * A panel follower ("panel" in the DT, often sharing the panel's
+	 * supply) is powered down before the panel and up after it, and not
+	 * by system suspend: the panel goes through both then.
+	 */
+	struct drm_panel_follower panel_follower;
+	struct work_struct power_up_work;
+	bool is_panel_follower;
+	bool powered_down;	/* by power_down, until power_up */
+	bool supplies_off;	/* vcc and iovcc disabled by power_down */
 	int threshold;
 	int gain;
 	int offset;
@@ -1109,9 +1124,156 @@ static void edt_ft5x06_disable_regulators(void *arg)
 {
 	struct edt_ft5x06_ts_data *data = arg;
 
+	/* Unfollowing the panel at removal may have cut them already. */
+	if (data->supplies_off)
+		return;
+
 	regulator_disable(data->vcc);
 	regulator_disable(data->iovcc);
 }
+
+/* Hibernate, and with a reset GPIO cut the power too (the deepest mode). */
+static void edt_ft5x06_ts_power_down(struct edt_ft5x06_ts_data *tsdata)
+{
+	struct device *dev = &tsdata->client->dev;
+	struct gpio_desc *reset_gpio = tsdata->reset_gpio;
+	int ret;
+
+	/* Enter hibernate mode. */
+	ret = regmap_write(tsdata->regmap, PMOD_REGISTER_OPMODE,
+			   PMOD_REGISTER_HIBERNATE);
+	if (ret)
+		dev_warn(dev, "Failed to set hibernate mode\n");
+
+	tsdata->powered_down = true;
+
+	if (tsdata->suspend_mode == EDT_PMODE_HIBERNATE)
+		return;
+
+	/*
+	 * Power-off according the datasheet. Cut the power may leaf the irq
+	 * line in an undefined state depending on the host pull resistor
+	 * settings. Disable the irq to avoid adjusting each host till the
+	 * device is back in a full functional state.
+	 */
+	disable_irq(tsdata->client->irq);
+
+	gpiod_set_value_cansleep(reset_gpio, 1);
+	usleep_range(1000, 2000);
+
+	ret = regulator_disable(tsdata->vcc);
+	if (ret)
+		dev_warn(dev, "Failed to disable vcc\n");
+	ret = regulator_disable(tsdata->iovcc);
+	if (ret)
+		dev_warn(dev, "Failed to disable iovcc\n");
+	tsdata->supplies_off = true;
+}
+
+static int edt_ft5x06_ts_power_up(struct edt_ft5x06_ts_data *tsdata)
+{
+	struct device *dev = &tsdata->client->dev;
+	int ret = 0;
+
+	if (tsdata->suspend_mode == EDT_PMODE_POWEROFF) {
+		struct gpio_desc *reset_gpio = tsdata->reset_gpio;
+
+		/*
+		 * We can't check if the regulator is a dummy or a real
+		 * regulator. So we need to specify the 5ms reset time (T_rst)
+		 * here instead of the 100us T_rtp time. We also need to wait
+		 * 300ms in case it was a real supply and the power was cutted
+		 * of. Toggle the reset pin is also a way to exit the hibernate
+		 * mode.
+		 */
+		gpiod_set_value_cansleep(reset_gpio, 1);
+		usleep_range(5000, 6000);
+
+		ret = regulator_enable(tsdata->iovcc);
+		if (ret) {
+			dev_err(dev, "Failed to enable iovcc\n");
+			return ret;
+		}
+
+		/* Delay enabling VCC for > 10us (T_ivd) after IOVCC */
+		usleep_range(10, 100);
+
+		ret = regulator_enable(tsdata->vcc);
+		if (ret) {
+			dev_err(dev, "Failed to enable vcc\n");
+			regulator_disable(tsdata->iovcc);
+			return ret;
+		}
+		tsdata->supplies_off = false;
+
+		usleep_range(1000, 2000);
+		gpiod_set_value_cansleep(reset_gpio, 0);
+		msleep(300);
+
+		edt_ft5x06_restore_reg_parameters(tsdata);
+		enable_irq(tsdata->client->irq);
+
+		if (tsdata->factory_mode)
+			ret = edt_ft5x06_factory_mode(tsdata);
+	} else {
+		struct gpio_desc *wake_gpio = tsdata->wake_gpio;
+
+		gpiod_set_value_cansleep(wake_gpio, 0);
+		usleep_range(5000, 6000);
+		gpiod_set_value_cansleep(wake_gpio, 1);
+	}
+
+	tsdata->powered_down = false;
+
+	return ret;
+}
+
+static void edt_ft5x06_ts_power_up_work(struct work_struct *work)
+{
+	struct edt_ft5x06_ts_data *tsdata =
+		container_of(work, struct edt_ft5x06_ts_data, power_up_work);
+	int ret;
+
+	guard(mutex)(&tsdata->mutex);
+
+	if (!tsdata->powered_down)
+		return;
+
+	ret = edt_ft5x06_ts_power_up(tsdata);
+	if (ret)
+		dev_warn(&tsdata->client->dev, "Power on failed: %d\n", ret);
+}
+
+static int edt_ft5x06_ts_panel_prepared(struct drm_panel_follower *follower)
+{
+	struct edt_ft5x06_ts_data *tsdata =
+		container_of(follower, struct edt_ft5x06_ts_data, panel_follower);
+
+	/* The 300 ms the controller takes to start would hold up the panel. */
+	schedule_work(&tsdata->power_up_work);
+
+	return 0;
+}
+
+static int edt_ft5x06_ts_panel_unpreparing(struct drm_panel_follower *follower)
+{
+	struct edt_ft5x06_ts_data *tsdata =
+		container_of(follower, struct edt_ft5x06_ts_data, panel_follower);
+
+	cancel_work_sync(&tsdata->power_up_work);
+
+	guard(mutex)(&tsdata->mutex);
+
+	if (!tsdata->powered_down)
+		edt_ft5x06_ts_power_down(tsdata);
+
+	return 0;
+}
+
+static const struct drm_panel_follower_funcs edt_ft5x06_ts_follower_funcs = {
+	.panel_prepared = edt_ft5x06_ts_panel_prepared,
+	.panel_unpreparing = edt_ft5x06_ts_panel_unpreparing,
+};
 
 static int edt_ft5x06_ts_probe(struct i2c_client *client)
 {
@@ -1157,6 +1319,23 @@ static int edt_ft5x06_ts_probe(struct i2c_client *client)
 	}
 
 	tsdata->max_support_points = chip_data->max_support_points;
+
+	/*
+	 * Wait for the panel to follow before powering up: a deferral after
+	 * that would cut a supply the panel may share.
+	 */
+	tsdata->is_panel_follower = drm_is_panel_follower(&client->dev);
+	if (tsdata->is_panel_follower && client->dev.of_node) {
+		struct device_node *np;
+		struct drm_panel *panel;
+
+		np = of_parse_phandle(client->dev.of_node, "panel", 0);
+		panel = of_drm_find_panel(np);
+		of_node_put(np);
+		if (IS_ERR(panel))
+			return dev_err_probe(&client->dev, PTR_ERR(panel),
+					     "no panel to follow\n");
+	}
 
 	tsdata->vcc = devm_regulator_get(&client->dev, "vcc");
 	if (IS_ERR(tsdata->vcc))
@@ -1325,6 +1504,28 @@ static int edt_ft5x06_ts_probe(struct i2c_client *client)
 	if (error)
 		return error;
 
+	if (tsdata->is_panel_follower &&
+	    tsdata->suspend_mode == EDT_PMODE_NOT_SUPPORTED) {
+		dev_warn(&client->dev,
+			 "no reset or wake GPIO, not following the panel\n");
+		tsdata->is_panel_follower = false;
+	}
+
+	if (tsdata->is_panel_follower) {
+		error = devm_work_autocancel(&client->dev,
+					     &tsdata->power_up_work,
+					     edt_ft5x06_ts_power_up_work);
+		if (error)
+			return error;
+
+		tsdata->panel_follower.funcs = &edt_ft5x06_ts_follower_funcs;
+		error = devm_drm_panel_add_follower(&client->dev,
+						    &tsdata->panel_follower);
+		if (error)
+			return dev_err_probe(&client->dev, error,
+					     "failed to follow the panel\n");
+	}
+
 	edt_ft5x06_ts_prepare_debugfs(tsdata);
 
 	dev_dbg(&client->dev,
@@ -1347,8 +1548,9 @@ static int edt_ft5x06_ts_suspend(struct device *dev)
 {
 	struct i2c_client *client = to_i2c_client(dev);
 	struct edt_ft5x06_ts_data *tsdata = i2c_get_clientdata(client);
-	struct gpio_desc *reset_gpio = tsdata->reset_gpio;
-	int ret;
+
+	if (tsdata->is_panel_follower)
+		return 0;
 
 	if (device_may_wakeup(dev))
 		return 0;
@@ -1356,32 +1558,7 @@ static int edt_ft5x06_ts_suspend(struct device *dev)
 	if (tsdata->suspend_mode == EDT_PMODE_NOT_SUPPORTED)
 		return 0;
 
-	/* Enter hibernate mode. */
-	ret = regmap_write(tsdata->regmap, PMOD_REGISTER_OPMODE,
-			   PMOD_REGISTER_HIBERNATE);
-	if (ret)
-		dev_warn(dev, "Failed to set hibernate mode\n");
-
-	if (tsdata->suspend_mode == EDT_PMODE_HIBERNATE)
-		return 0;
-
-	/*
-	 * Power-off according the datasheet. Cut the power may leaf the irq
-	 * line in an undefined state depending on the host pull resistor
-	 * settings. Disable the irq to avoid adjusting each host till the
-	 * device is back in a full functional state.
-	 */
-	disable_irq(tsdata->client->irq);
-
-	gpiod_set_value_cansleep(reset_gpio, 1);
-	usleep_range(1000, 2000);
-
-	ret = regulator_disable(tsdata->vcc);
-	if (ret)
-		dev_warn(dev, "Failed to disable vcc\n");
-	ret = regulator_disable(tsdata->iovcc);
-	if (ret)
-		dev_warn(dev, "Failed to disable iovcc\n");
+	edt_ft5x06_ts_power_down(tsdata);
 
 	return 0;
 }
@@ -1390,7 +1567,9 @@ static int edt_ft5x06_ts_resume(struct device *dev)
 {
 	struct i2c_client *client = to_i2c_client(dev);
 	struct edt_ft5x06_ts_data *tsdata = i2c_get_clientdata(client);
-	int ret = 0;
+
+	if (tsdata->is_panel_follower)
+		return 0;
 
 	if (device_may_wakeup(dev))
 		return 0;
@@ -1398,54 +1577,7 @@ static int edt_ft5x06_ts_resume(struct device *dev)
 	if (tsdata->suspend_mode == EDT_PMODE_NOT_SUPPORTED)
 		return 0;
 
-	if (tsdata->suspend_mode == EDT_PMODE_POWEROFF) {
-		struct gpio_desc *reset_gpio = tsdata->reset_gpio;
-
-		/*
-		 * We can't check if the regulator is a dummy or a real
-		 * regulator. So we need to specify the 5ms reset time (T_rst)
-		 * here instead of the 100us T_rtp time. We also need to wait
-		 * 300ms in case it was a real supply and the power was cutted
-		 * of. Toggle the reset pin is also a way to exit the hibernate
-		 * mode.
-		 */
-		gpiod_set_value_cansleep(reset_gpio, 1);
-		usleep_range(5000, 6000);
-
-		ret = regulator_enable(tsdata->iovcc);
-		if (ret) {
-			dev_err(dev, "Failed to enable iovcc\n");
-			return ret;
-		}
-
-		/* Delay enabling VCC for > 10us (T_ivd) after IOVCC */
-		usleep_range(10, 100);
-
-		ret = regulator_enable(tsdata->vcc);
-		if (ret) {
-			dev_err(dev, "Failed to enable vcc\n");
-			regulator_disable(tsdata->iovcc);
-			return ret;
-		}
-
-		usleep_range(1000, 2000);
-		gpiod_set_value_cansleep(reset_gpio, 0);
-		msleep(300);
-
-		edt_ft5x06_restore_reg_parameters(tsdata);
-		enable_irq(tsdata->client->irq);
-
-		if (tsdata->factory_mode)
-			ret = edt_ft5x06_factory_mode(tsdata);
-	} else {
-		struct gpio_desc *wake_gpio = tsdata->wake_gpio;
-
-		gpiod_set_value_cansleep(wake_gpio, 0);
-		usleep_range(5000, 6000);
-		gpiod_set_value_cansleep(wake_gpio, 1);
-	}
-
-	return ret;
+	return edt_ft5x06_ts_power_up(tsdata);
 }
 
 static DEFINE_SIMPLE_DEV_PM_OPS(edt_ft5x06_ts_pm_ops,
