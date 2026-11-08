@@ -773,6 +773,13 @@
 		interrupt-parent = <&gpio2>;
 		interrupts = <5 2>;
 		reset-gpios = <&gpio2 7 1>;
+		/*
+		 * vdd_lcdtp is the panel's VDD too: following the panel, the
+		 * controller lets go of it when the panel is turned off, so
+		 * that the panel (~215 mA at 3.3 V, no sleep mode) loses
+		 * power with the screen.
+		 */
+		panel = <&lcd_panel>;
 		/* The controller reports in the panel's landscape frame, rotated 180 degrees */
 		touchscreen-size-x = <1920>;
 		touchscreen-size-y = <1280>;
@@ -1160,7 +1167,7 @@
 		};
 	};
 
-	panel@0 {
+	lcd_panel: panel@0 {
 		compatible = "samsung,ltl090cl01";
 		reg = <0>;
 		pinctrl-names = "default";
