@@ -1899,7 +1899,14 @@ static int bq27xxx_battery_current_and_status(
 		val_curr->intval = curr;
 
 	if (val_status) {
-		if (bq27xxx_battery_is_full(di, flags))
+		/*
+		 * FC stays set after the charger goes until the charge falls
+		 * below the gauge's FC clear threshold: not full while DSG.
+		 */
+		bool dsg = !(di->opts & (BQ27XXX_O_ZERO | BQ27Z561_O_BITS)) &&
+			   (flags & BQ27XXX_FLAG_DSC);
+
+		if (bq27xxx_battery_is_full(di, flags) && !dsg)
 			val_status->intval = POWER_SUPPLY_STATUS_FULL;
 		else if (curr > 0)
 			val_status->intval = POWER_SUPPLY_STATUS_CHARGING;
