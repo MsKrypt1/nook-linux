@@ -788,10 +788,19 @@
 	};
 };
 
-/* UART1 - Debug/Console */
+/*
+ * UART1 - Debug/Console. The RX pad (i2c2_scl as uart1_rx) is its wake-up
+ * interrupt, as in the vendor board file (OMAP_DEVICE_PAD_WAKEUP). The port
+ * idles, and L4PER with it, only once it is no longer the kernel's console
+ * (8250 keeps a console port runtime-active; /sys/class/tty/ttyS0/console)
+ * and user space has set an autosuspend delay (8250_omap leaves it at -1,
+ * never); the first character received then wakes it and is lost.
+ */
 &uart1 {
 	pinctrl-names = "default";
 	pinctrl-0 = <&pinmux_uart1_pins>;
+	interrupts-extended = <&wakeupgen GIC_SPI 72 IRQ_TYPE_LEVEL_HIGH>,
+			      <&omap4_pmx_core 0xe6>;
 	status = "okay";
 };
 
