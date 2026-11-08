@@ -87,6 +87,13 @@
 #define USB2PHY_CHG_DET_DEDICATED	4
 #define USB2PHY_CHG_DET_HOST		5
 #define USB2PHY_CHG_DET_PC		6
+#define USB2PHY_CHG_DET_INTERRUPT	7
+#define USB2PHY_CHG_DET_EXT_CTL		BIT(28)
+#define USB2PHY_CHG_VSRC_EN		BIT(25)
+#define USB2PHY_CHG_ISINK_EN		BIT(24)
+#define USB2PHY_DATADET			BIT(18)
+#define USB2PHY_SINKONDP		BIT(17)
+#define USB2PHY_SRCONDM			BIT(16)
 #define USB2PHY_RESTARTCHGDET		BIT(15)
 
 struct twl6030_usb {
@@ -116,6 +123,7 @@ struct twl6030_usb {
 	unsigned int		chgdet_reg;
 	struct power_supply	*psy;
 	enum power_supply_usb_type usb_type;
+	bool			usb_type_from_probe;
 };
 
 #define	comparator_to_twl(x) container_of((x), struct twl6030_usb, comparator)
@@ -224,15 +232,53 @@ static struct attribute *twl6030_attrs[] = {
 ATTRIBUTE_GROUPS(twl6030);
 
 /*
+ * BC1.2 detection steps by hand, with the state machine bypassed: a voltage
+ * source on one data line, a current sink on the other, then the data
+ * comparator.  Primary: VDP_SRC on D+, IDM_SINK on D-; D- follows D+ on any
+ * charger.  Secondary: VDM_SRC on D-, IDP_SINK on D+; D+ follows D- only on
+ * a dedicated charger, which shorts the lines.  A PC port reads low in both.
+ */
+#define USB2PHY_PRIMARY_DET	(USB2PHY_CHG_DET_EXT_CTL | \
+				 USB2PHY_CHG_VSRC_EN | USB2PHY_CHG_ISINK_EN)
+#define USB2PHY_SECONDARY_DET	(USB2PHY_PRIMARY_DET | \
+				 USB2PHY_SINKONDP | USB2PHY_SRCONDM)
+
+static bool twl6030_usb_detect_step(struct twl6030_usb *twl, unsigned int bits)
+{
+	unsigned int v = 0;
+
+	regmap_update_bits(twl->chgdet, twl->chgdet_reg,
+			   USB2PHY_SECONDARY_DET, bits);
+	msleep(50);	/* TVDPSRC_ON, TVDMSRC_ON: 40 ms */
+	regmap_read(twl->chgdet, twl->chgdet_reg, &v);
+	regmap_clear_bits(twl->chgdet, twl->chgdet_reg, USB2PHY_SECONDARY_DET);
+	dev_dbg(twl->dev, "%s detection by hand: USB2PHYCORE 0x%08x\n",
+		bits == USB2PHY_PRIMARY_DET ? "primary" : "secondary", v);
+
+	return v & USB2PHY_DATADET;
+}
+
+/*
  * BC1.2 detection by the OMAP4 USB2 PHY, as in TI's 3.0 kernel.  It runs
  * while the PHY is powered; restart it for this VBUS session.  Run it
  * before musb sees VBUS, as BC1.2 wants detection before connecting.
+ *
+ * Only its "dedicated charger" is taken as it is; anything else is decided
+ * by the steps by hand.  It reports "host charger" for both wall adapters
+ * tried here, which bias D+/D- (the comparators of its resistor host
+ * detection read high before any source is on); at a slow insertion of the
+ * 30-pin plug VBUS comes before the data pins and it saw no charger ("PC");
+ * and it ends in "interrupt" when musb starts meanwhile (pmOS's initramfs
+ * binds its gadget during the boot-time detection), which is run again.
+ * Detection also waits for the data contact first.
  */
 static void twl6030_usb_charger_detect(struct twl6030_usb *twl)
 {
 	enum power_supply_usb_type type = POWER_SUPPLY_USB_TYPE_UNKNOWN;
 	unsigned int v = 0;
-	int ret;
+	int ret, tries;
+
+	msleep(300);	/* data contact, and LDOUSB just turned on */
 
 	ret = phy_init(twl->phy);
 	if (ret)
@@ -241,28 +287,35 @@ static void twl6030_usb_charger_detect(struct twl6030_usb *twl)
 	if (ret)
 		goto exit;
 
-	regmap_update_bits(twl->chgdet, twl->chgdet_reg,
-			   USB2PHY_DISCHGDET | USB2PHY_RESTARTCHGDET,
-			   USB2PHY_RESTARTCHGDET);
-	usleep_range(2000, 3000);
-	regmap_clear_bits(twl->chgdet, twl->chgdet_reg, USB2PHY_RESTARTCHGDET);
+	for (tries = 0; tries < 3; tries++) {
+		if (tries)
+			msleep(500);
+		regmap_update_bits(twl->chgdet, twl->chgdet_reg,
+				   USB2PHY_DISCHGDET | USB2PHY_RESTARTCHGDET,
+				   USB2PHY_RESTARTCHGDET);
+		usleep_range(2000, 3000);
+		regmap_clear_bits(twl->chgdet, twl->chgdet_reg,
+				  USB2PHY_RESTARTCHGDET);
 
-	ret = regmap_read_poll_timeout(twl->chgdet, twl->chgdet_reg, v,
-			FIELD_GET(USB2PHY_CHG_DET_STATUS, v) !=
-			USB2PHY_CHG_DET_WAIT, 20000, 2000000);
-	if (!ret) {
-		switch (FIELD_GET(USB2PHY_CHG_DET_STATUS, v)) {
-		case USB2PHY_CHG_DET_DEDICATED:
-			type = POWER_SUPPLY_USB_TYPE_DCP;
+		ret = regmap_read_poll_timeout(twl->chgdet, twl->chgdet_reg, v,
+				FIELD_GET(USB2PHY_CHG_DET_STATUS, v) !=
+				USB2PHY_CHG_DET_WAIT, 20000, 2000000);
+		if (!ret && FIELD_GET(USB2PHY_CHG_DET_STATUS, v) !=
+			    USB2PHY_CHG_DET_INTERRUPT)
 			break;
-		case USB2PHY_CHG_DET_HOST:
-			type = POWER_SUPPLY_USB_TYPE_CDP;
-			break;
-		case USB2PHY_CHG_DET_PC:
-			type = POWER_SUPPLY_USB_TYPE_SDP;
-			break;
-		}
+		dev_dbg(twl->dev, "charger detection disturbed: %d, 0x%08x\n",
+			ret, v);
 	}
+	if (!ret && FIELD_GET(USB2PHY_CHG_DET_STATUS, v) ==
+		    USB2PHY_CHG_DET_DEDICATED)
+		type = POWER_SUPPLY_USB_TYPE_DCP;
+	else if (!twl6030_usb_detect_step(twl, USB2PHY_PRIMARY_DET))
+		type = POWER_SUPPLY_USB_TYPE_SDP;
+	else if (twl6030_usb_detect_step(twl, USB2PHY_SECONDARY_DET))
+		type = POWER_SUPPLY_USB_TYPE_DCP;
+	else
+		type = POWER_SUPPLY_USB_TYPE_CDP;
+	ret = 0;
 
 	phy_power_off(twl->phy);
 exit:
@@ -270,7 +323,8 @@ exit:
 out:
 	if (ret)
 		dev_warn(twl->dev, "charger detection failed: %d\n", ret);
-	dev_dbg(twl->dev, "charger detection: USB2PHYCORE 0x%08x\n", v);
+	dev_dbg(twl->dev, "charger detection: USB2PHYCORE 0x%08x, type %d\n",
+		v, type);
 	twl->usb_type = type;
 }
 
@@ -390,8 +444,9 @@ static irqreturn_t twl6030_usb_irq(int irq, void *_twl)
 
 			twl6030_usb_ldo_get(twl);
 
-			if (twl->psy)
+			if (twl->psy && !twl->usb_type_from_probe)
 				twl6030_usb_charger_detect(twl);
+			twl->usb_type_from_probe = false;
 
 			status = MUSB_VBUS_VALID;
 			twl->linkstat = status;
@@ -399,6 +454,7 @@ static irqreturn_t twl6030_usb_irq(int irq, void *_twl)
 			if (ret)
 				twl->linkstat = MUSB_UNKNOWN;
 		} else {
+			twl->usb_type_from_probe = false;
 			if (twl->linkstat != MUSB_UNKNOWN &&
 			    twl->linkstat != MUSB_VBUS_OFF) {
 				status = MUSB_VBUS_OFF;
@@ -445,6 +501,31 @@ static irqreturn_t twl6030_usbotg_irq(int irq, void *_twl)
 	twl6030_writeb(twl, TWL_MODULE_USB, status, USB_ID_INT_LATCH_CLR);
 
 	return IRQ_HANDLED;
+}
+
+/*
+ * With VBUS there at boot, detect now, during kernel init.  By the delayed
+ * status report userspace may be binding a gadget (pmOS's initramfs does,
+ * about 1.5 s after this probe), and musb starting without a VBUS report
+ * yet sets the PHY's session signals to "disconnect": while musb is active
+ * that pulls the data lines low, so a charger read as a PC.
+ */
+static void twl6030_usb_boot_detect(struct twl6030_usb *twl)
+{
+	u8 hw_state, vbus_state;
+
+	if (!twl->psy)
+		return;
+
+	hw_state = twl6030_readb(twl, TWL6030_MODULE_ID0, STS_HW_CONDITIONS);
+	vbus_state = twl6030_readb(twl, TWL_MODULE_MAIN_CHARGE,
+				   CONTROLLER_STAT1);
+	if ((hw_state & STS_USB_ID) || !(vbus_state & VBUS_DET))
+		return;
+
+	twl6030_usb_ldo_get(twl);
+	twl6030_usb_charger_detect(twl);
+	twl->usb_type_from_probe = true;
 }
 
 static void twl6030_status_work(struct work_struct *work)
@@ -570,6 +651,7 @@ static int twl6030_usb_probe(struct platform_device *pdev)
 	}
 
 	twl->asleep = 0;
+	twl6030_usb_boot_detect(twl);
 	twl6030_enable_irq(twl);
 	schedule_delayed_work(&twl->get_status_work, HZ);
 	dev_info(&pdev->dev, "Initialized TWL6030 USB module\n");
