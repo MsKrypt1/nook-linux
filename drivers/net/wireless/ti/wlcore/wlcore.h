@@ -358,6 +358,10 @@ struct wl1271 {
 
 	bool sg_enabled;
 
+	/* soft gemini held off for an association (WLCORE_QUIRK_SG_ASSOC) */
+	bool sg_paused;
+	struct delayed_work sg_resume_work;
+
 	bool enable_11a;
 
 	int recovery_count;
@@ -552,6 +556,9 @@ wlcore_set_min_fw_ver(struct wl1271 *wl, unsigned int chip,
 
 /* the first STA role started after a firmware boot doesn't rx/tx (wl127x) */
 #define WLCORE_QUIRK_START_STA_FAILS		BIT(1)
+
+/* soft gemini during the first association after a boot stalls the firmware (wl127x) */
+#define WLCORE_QUIRK_SG_ASSOC			BIT(6)
 
 /* wl127x and SPI don't support SDIO block size alignment */
 #define WLCORE_QUIRK_TX_BLOCKSIZE_ALIGN		BIT(2)

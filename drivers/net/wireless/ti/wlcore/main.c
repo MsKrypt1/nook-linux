@@ -52,6 +52,69 @@ static void __wl1271_op_remove_interface(struct wl1271 *wl,
 static void wlcore_op_stop_locked(struct wl1271 *wl);
 static void wl1271_free_ap_keys(struct wl1271 *wl, struct wl12xx_vif *wlvif);
 
+/*
+ * The wl127x firmware (6.3.10.0.142) stalls on the first association after
+ * a boot when soft gemini is on and a Bluetooth ACL link is up: its watchdog
+ * fires about 4 s after the STA role is authorized, and wlcore starts a
+ * recovery. With soft gemini off from the authentication until the
+ * authorization this never happened; with it off only around the
+ * authorization, it still did. So WLCORE_QUIRK_SG_ASSOC turns soft gemini
+ * off when mac80211 adds the AP station and back on right after the
+ * authorization (about 0.2 s later), or once the AP station is gone. If
+ * neither comes, soft gemini is back after this long.
+ */
+#define WLCORE_SG_PAUSE_MAX_MS	15000
+
+/* wl->mutex held, chip awake */
+static void wlcore_sg_pause(struct wl1271 *wl)
+{
+	if (!(wl->quirks & WLCORE_QUIRK_SG_ASSOC) || !wl->sg_enabled)
+		return;
+
+	if (!wl->sg_paused) {
+		if (wl1271_acx_sg_enable(wl, false) < 0)
+			return;
+		wl->sg_paused = true;
+		wl1271_debug(DEBUG_ACX, "soft gemini off for the association");
+	}
+	mod_delayed_work(wl->freezable_wq, &wl->sg_resume_work,
+			 msecs_to_jiffies(WLCORE_SG_PAUSE_MAX_MS));
+}
+
+/* wl->mutex held, chip awake */
+static void wlcore_sg_resume(struct wl1271 *wl)
+{
+	if (!wl->sg_paused)
+		return;
+
+	cancel_delayed_work(&wl->sg_resume_work);
+	wl->sg_paused = false;
+	wl1271_acx_sg_enable(wl, wl->sg_enabled);
+	wl1271_debug(DEBUG_ACX, "soft gemini back");
+}
+
+static void wlcore_sg_resume_work(struct work_struct *work)
+{
+	struct delayed_work *dwork = to_delayed_work(work);
+	struct wl1271 *wl = container_of(dwork, struct wl1271, sg_resume_work);
+	int ret;
+
+	mutex_lock(&wl->mutex);
+
+	if (unlikely(wl->state != WLCORE_STATE_ON) || !wl->sg_paused)
+		goto out;
+
+	ret = pm_runtime_resume_and_get(wl->dev);
+	if (ret < 0)
+		goto out;
+
+	wlcore_sg_resume(wl);
+
+	pm_runtime_put_autosuspend(wl->dev);
+out:
+	mutex_unlock(&wl->mutex);
+}
+
 static int wl12xx_set_authorized(struct wl1271 *wl, struct wl12xx_vif *wlvif)
 {
 	int ret;
@@ -68,6 +131,10 @@ static int wl12xx_set_authorized(struct wl1271 *wl, struct wl12xx_vif *wlvif)
 	ret = wl12xx_cmd_set_peer_state(wl, wlvif, wlvif->sta.hlid);
 	if (ret < 0)
 		return ret;
+
+	/* soft gemini back as soon as this op is done */
+	if (wl->sg_paused)
+		mod_delayed_work(wl->freezable_wq, &wl->sg_resume_work, 0);
 
 	wl1271_info("Association completed.");
 	return 0;
@@ -2015,6 +2082,7 @@ static void wlcore_op_stop_locked(struct wl1271 *wl)
 	cancel_work_sync(&wl->netstack_work);
 	cancel_work_sync(&wl->tx_work);
 	cancel_delayed_work_sync(&wl->tx_watchdog_work);
+	cancel_delayed_work_sync(&wl->sg_resume_work);
 
 	/* let's notify MAC80211 about the remaining pending TX frames */
 	mutex_lock(&wl->mutex);
@@ -2047,6 +2115,8 @@ static void wlcore_op_stop_locked(struct wl1271 *wl)
 	memset(wl->roc_map, 0, sizeof(wl->roc_map));
 	memset(wl->session_ids, 0, sizeof(wl->session_ids));
 	wl->sta_started = false;
+	/* the firmware boots with soft gemini as wl->sg_enabled says */
+	wl->sg_paused = false;
 	memset(wl->rx_filter_enabled, 0, sizeof(wl->rx_filter_enabled));
 	wl->active_sta_count = 0;
 	wl->active_link_count = 0;
@@ -5318,9 +5388,15 @@ static int wl12xx_update_sta_state(struct wl1271 *wl,
 			wl12xx_croc(wl, wlvif->role_id);
 	}
 
+	/* soft gemini off from the authentication to the authorization */
+	if (is_sta && new_state == IEEE80211_STA_NOTEXIST)
+		wlcore_sg_resume(wl);
+
 	if (is_sta &&
 	    old_state == IEEE80211_STA_NOTEXIST &&
 	    new_state == IEEE80211_STA_NONE) {
+		wlcore_sg_pause(wl);
+
 		if (find_first_bit(wl->roc_map,
 				   WL12XX_MAX_ROLES) >= WL12XX_MAX_ROLES) {
 			WARN_ON(wlvif->role_id == WL12XX_INVALID_ROLE_ID);
@@ -6417,6 +6493,7 @@ struct ieee80211_hw *wlcore_alloc_hw(size_t priv_size, u32 aggr_buf_size,
 	INIT_DELAYED_WORK(&wl->scan_complete_work, wl1271_scan_complete_work);
 	INIT_DELAYED_WORK(&wl->roc_complete_work, wlcore_roc_complete_work);
 	INIT_DELAYED_WORK(&wl->tx_watchdog_work, wl12xx_tx_watchdog_work);
+	INIT_DELAYED_WORK(&wl->sg_resume_work, wlcore_sg_resume_work);
 
 	wl->freezable_wq = create_freezable_workqueue("wl12xx_wq");
 	if (!wl->freezable_wq) {
