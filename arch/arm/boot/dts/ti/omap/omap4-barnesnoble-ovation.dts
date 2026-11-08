@@ -796,6 +796,20 @@
 };
 
 /*
+ * UART2 and UART3 are not wired to anything (the vendor board file sets up
+ * UART1 and UART4 only). Probed, an 8250_omap port without a serdev child
+ * never runtime-suspends (autosuspend delay -1), and each of the two kept
+ * L4PER from idling.
+ */
+&uart2 {
+	status = "disabled";
+};
+
+&uart3 {
+	status = "disabled";
+};
+
+/*
  * UART4 - Bluetooth: the WiLink's HCI UART with RTS/CTS (vendor
  * board-bn-wifi.c, ttyO3), nshutdown on gpio_83. The 32 kHz slow clock is
  * the TWL6032 CLK32KG, shared with the WLAN power sequence.
