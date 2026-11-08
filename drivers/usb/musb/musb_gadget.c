@@ -1182,11 +1182,40 @@ void musb_ep_restart(struct musb *musb, struct musb_request *req)
 	if (req->tx) {
 		txstate(musb, req);
 	} else {
+		/*
+		 * A packet that came while no request was queued is still in
+		 * the FIFO, and the host has had its ACK: it must reach this
+		 * request (a flush loses it, e.g. an MTP command). rxstate()
+		 * may give the request back, which it must not do from within
+		 * usb_ep_queue(), so the packet is read from a work item.
+		 */
 		csr = musb_readw(epio, MUSB_RXCSR);
-		csr |= MUSB_RXCSR_FLUSHFIFO | MUSB_RXCSR_P_WZC_BITS;
-		musb_writew(epio, MUSB_RXCSR, csr);
-		musb_writew(epio, MUSB_RXCSR, csr);
+		if (csr & MUSB_RXCSR_RXPKTRDY) {
+			musb->gadget_rx_pending |= BIT(req->epnum);
+			schedule_work(&musb->gadget_rx_work);
+		}
 	}
+}
+
+static void musb_gadget_rx_work(struct work_struct *work)
+{
+	struct musb *musb = container_of(work, struct musb, gadget_rx_work);
+	unsigned long flags;
+	u16 pending;
+
+	pm_runtime_get_sync(musb->controller);
+	spin_lock_irqsave(&musb->lock, flags);
+	pending = musb->gadget_rx_pending;
+	musb->gadget_rx_pending = 0;
+	while (pending) {
+		u8 epnum = __ffs(pending);
+
+		pending &= ~BIT(epnum);
+		/* nothing to do if the IRQ has read it meanwhile */
+		musb_g_rx(musb, epnum);
+	}
+	spin_unlock_irqrestore(&musb->lock, flags);
+	pm_runtime_put_autosuspend(musb->controller);
 }
 
 static int musb_ep_restart_resume_work(struct musb *musb, void *data)
@@ -1799,6 +1828,7 @@ int musb_gadget_setup(struct musb *musb)
 	/* don't support otg protocols */
 	musb->g.is_otg = 0;
 	INIT_DELAYED_WORK(&musb->gadget_work, musb_gadget_work);
+	INIT_WORK(&musb->gadget_rx_work, musb_gadget_rx_work);
 	musb_g_init_endpoints(musb);
 
 	musb->is_active = 0;
@@ -1821,6 +1851,7 @@ void musb_gadget_cleanup(struct musb *musb)
 		return;
 
 	cancel_delayed_work_sync(&musb->gadget_work);
+	cancel_work_sync(&musb->gadget_rx_work);
 	usb_del_gadget_udc(&musb->g);
 }
 
