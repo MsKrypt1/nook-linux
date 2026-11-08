@@ -187,6 +187,16 @@ static void nuke(struct musb_ep *ep, const int status)
 
 		value = c->channel_abort(ep->dma);
 		musb_dbg(musb, "%s: abort DMA --> %d", ep->name, value);
+
+		/*
+		 * Unmap the requests while ep->dma is set: the giveback below
+		 * no longer can, and a request given back still mapped keeps
+		 * its old buffer's address in request.dma, which a later queue
+		 * takes for a mapping of the new buffer (PRE_MAPPED). The DMA
+		 * then reads or writes the old, freed buffer.
+		 */
+		list_for_each_entry(req, &ep->req_list, list)
+			unmap_dma_buffer(req, musb);
 		c->channel_release(ep->dma);
 		ep->dma = NULL;
 	}
@@ -361,6 +371,8 @@ static void txstate(struct musb *musb, struct musb_request *req)
 					request->dma + request->actual,
 					request_size);
 			if (!use_dma) {
+				/* PIO from here: see nuke() */
+				unmap_dma_buffer(req, musb);
 				c->channel_release(musb_ep->dma);
 				musb_ep->dma = NULL;
 				csr &= ~MUSB_TXCSR_DMAENAB;
