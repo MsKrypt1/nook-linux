@@ -378,6 +378,20 @@
 		output-low;
 		line-name = "EXT-FET-EN";
 	};
+
+	/*
+	 * MSECURE: the TWL6032 ignores writes to RTC_CTRL_REG (but GET_TIME)
+	 * and to the time registers while its MSECURE input is low
+	 * (TPS80032 register map, SWCU096C). The vendor board file drives
+	 * fref_clk0_out as gpio_wk6, high; sys_drm_msecure (mux mode 2) left
+	 * it low on this unit, so the RTC could not be started or set.
+	 */
+	twl-msecure-hog {
+		gpio-hog;
+		gpios = <6 GPIO_ACTIVE_HIGH>;
+		output-high;
+		line-name = "MSECURE";
+	};
 };
 
 &gpio2 {
@@ -406,11 +420,10 @@
 
 &omap4_pmx_wkup {
 	gpio1_hog_wkup_pins: gpio1-hog-wkup-pins {
-		pinctrl-single,pins = <0x08 0x03>;
-	};
-
-	twl6030_wkup_pins: twl6030-wkup-pins {
-		pinctrl-single,pins = <0x14 0x02>;
+		pinctrl-single,pins = <
+			0x08 0x03	/* gpio_wk4: EXT-FET-EN */
+			0x14 0x03	/* fref_clk0_out.gpio_wk6: TWL6032 MSECURE */
+		>;
 	};
 
 	/* Hall sensor (fref_clk3_out.gpio_wk31), input without pull */
@@ -627,7 +640,7 @@
 		#address-cells = <0x01>;
 		#size-cells = <0x00>;
 		pinctrl-names = "default";
-		pinctrl-0 = <&twl6030_pins &twl6030_wkup_pins>;
+		pinctrl-0 = <&twl6030_pins>;
 
 		rtc {
 			compatible = "ti,twl4030-rtc";
