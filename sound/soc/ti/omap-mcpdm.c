@@ -520,8 +520,13 @@ static int omap_mcpdm_probe(struct snd_soc_dai *dai)
 		pm_runtime_disable(mcpdm->dev);
 	}
 
-	/* Configure McPDM threshold values */
-	mcpdm->config[SNDRV_PCM_STREAM_PLAYBACK].threshold = 2;
+	/*
+	 * Configure McPDM threshold values. Without the AESS, a downlink
+	 * threshold of 1 or 2 with four downlink channels enabled adds a
+	 * floor noise at about -80 dBFS to the audio band; 4 brings it back
+	 * to about -130 dBFS [OMAP4470 errata i635].
+	 */
+	mcpdm->config[SNDRV_PCM_STREAM_PLAYBACK].threshold = 4;
 	mcpdm->config[SNDRV_PCM_STREAM_CAPTURE].threshold =
 							MCPDM_UP_THRES_MAX - 3;
 
