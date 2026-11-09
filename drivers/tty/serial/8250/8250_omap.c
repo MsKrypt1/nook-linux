@@ -837,6 +837,14 @@ static void omap_8250_shutdown(struct uart_port *port)
 	if (up->dma)
 		omap_8250_rx_dma_flush(up);
 
+	/*
+	 * Also for omap8250_runtime_suspend(), which writes priv->wer back
+	 * after its soft reset: a closed port left with the module wake-ups
+	 * on takes a wake-up request from its RX or CTS line, e.g. with the
+	 * device on the other end powered off, and the module then never
+	 * acknowledges idle (its CLKCTRL stuck "in transition").
+	 */
+	priv->wer = 0;
 	serial_out(up, UART_OMAP_WER, 0);
 	if (priv->habit & UART_HAS_EFR2)
 		serial_out(up, UART_OMAP_EFR2, 0x0);
