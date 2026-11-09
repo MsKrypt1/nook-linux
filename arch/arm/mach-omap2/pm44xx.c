@@ -28,6 +28,7 @@
 #include "cm-regbits-44xx.h"
 #include "prcm44xx.h"
 #include "iomap.h"
+#include "control.h"
 
 u16 pm44xx_errata;
 
@@ -318,6 +319,37 @@ static void __init omap4_pm_undo_bootloader_settings(void)
 }
 
 /**
+ * omap4470_lpddr2io_errata_i736 - pull logic off on the LPDDR2 clock pads
+ *
+ * With their pull logic on, the LPDDR2 clock I/Os (pad group 10) leak on
+ * vddca_lpddr2 while CORE is in open switch retention. The erratum asks
+ * for the pull to be disabled except in device OFF, where it wants a
+ * pull-down; the reset value is the pull-down (GR10_WD = 2). Device OFF
+ * is not used, so turn the pull off once at boot [OMAP4470 errata i736].
+ * The pad control registers keep their value through OSWR.
+ */
+static void __init omap4470_lpddr2io_errata_i736(void)
+{
+	static const u16 offs[] = {
+		OMAP4_CTRL_MODULE_PAD_CORE_CONTROL_LPDDR2IO1_2,
+		OMAP4_CTRL_MODULE_PAD_CORE_CONTROL_LPDDR2IO2_2,
+	};
+	void __iomem *base = OMAP2_L4_IO_ADDRESS(OMAP443X_CTRL_BASE);
+	int i;
+	u32 v;
+
+	if (!soc_is_omap447x())
+		return;
+
+	for (i = 0; i < ARRAY_SIZE(offs); i++) {
+		v = readl_relaxed(base + offs[i]);
+		if (v & OMAP4_LPDDR2IO_GR10_WD_MASK)
+			writel_relaxed(v & ~OMAP4_LPDDR2IO_GR10_WD_MASK,
+				       base + offs[i]);
+	}
+}
+
+/**
  * omap4_pm_init_early - Does early initialization necessary for OMAP4+ devices
  *
  * Initializes basic stuff for power management functionality.
@@ -361,6 +393,7 @@ int __init omap4_pm_init(void)
 		pr_debug("OMAP4 PM: u-boot >= v2012.07 is required for full PM support\n");
 
 	omap4_pm_undo_bootloader_settings();
+	omap4470_lpddr2io_errata_i736();
 
 	ret = pwrdm_for_each(pwrdms_setup, NULL);
 	if (ret) {
