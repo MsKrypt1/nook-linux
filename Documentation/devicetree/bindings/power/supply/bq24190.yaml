@@ -54,6 +54,14 @@ properties:
       battery that lists this charger in power-supplies. Without the property
       the current does not depend on the temperature.
 
+  ti,ilim-microamp:
+    minimum: 500000
+    maximum: 3000000
+    description: |
+      Input current limit set by the resistor on the ILIM pin (KILIM / RILIM),
+      which caps any IINLIM setting. Without the property no cap below 3 A is
+      assumed.
+
   psel-gpios:
     maxItems: 1
     description: |

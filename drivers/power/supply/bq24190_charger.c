@@ -284,6 +284,7 @@ struct bq24190_dev_info {
 	u32				vreg;
 	u32				vreg_max;
 	u32				cold_ichg;
+	int				ilim;
 	struct mutex			f_reg_lock;
 	struct mutex			rmw_lock;
 	u8				f_reg;
@@ -1540,7 +1541,7 @@ static int bq24190_charger_get_iinlimit(struct bq24190_dev_info *bdi,
 	if (ret < 0)
 		return ret;
 
-	val->intval = iinlimit;
+	val->intval = min(iinlimit, bdi->ilim);
 	return 0;
 }
 
@@ -1571,7 +1572,8 @@ static int bq24190_set_psel(struct bq24190_dev_info *bdi, bool adapter)
  * clears IINLIM[1:0], so I2C can set only 100 mA and 1.2 A.  The detection
  * restores the PSEL/OTG default, 500 mA for a USB host or 3 A for an
  * adapter, and bq24190_write_mask() reruns it after any REG00 write that
- * clears a set bit.  Take the highest of the three within the request.
+ * clears a set bit.  The ILIM pin caps the adapter's 3 A
+ * ("ti,ilim-microamp").  Take the highest of the three within the request.
  */
 static int bq24190_charger_set_iinlimit(struct bq24190_dev_info *bdi,
 		const union power_supply_propval *val)
@@ -1579,7 +1581,7 @@ static int bq24190_charger_set_iinlimit(struct bq24190_dev_info *bdi,
 	int lim = val->intval;
 
 	if (bdi->iinlim_quirk) {
-		int def = bdi->psel_adapter ? 3000000 : 500000;
+		int def = bdi->psel_adapter ? min(3000000, bdi->ilim) : 500000;
 		int i2c = lim >= 1200000 ? 1200000 : 100000;
 
 		if (lim >= def && def > i2c)
@@ -2343,6 +2345,14 @@ static int bq24190_get_config(struct bq24190_dev_info *bdi)
 			dev_warn(bdi->dev, "invalid value for %s: %u\n", s, v);
 	}
 
+	s = "ti,ilim-microamp";
+	if (device_property_read_u32(bdi->dev, s, &v) == 0) {
+		if (v >= 500000 && v <= 3000000)
+			bdi->ilim = v;
+		else
+			dev_warn(bdi->dev, "invalid value for %s: %u\n", s, v);
+	}
+
 	return 0;
 }
 
@@ -2453,6 +2463,7 @@ static int bq24190_probe(struct i2c_client *client)
 	mutex_init(&bdi->f_reg_lock);
 	mutex_init(&bdi->rmw_lock);
 	bdi->charge_type = POWER_SUPPLY_CHARGE_TYPE_FAST;
+	bdi->ilim = 3000000;	/* no ILIM cap known: "ti,ilim-microamp" */
 	bdi->f_reg = 0;
 	bdi->ss_reg = BQ24190_REG_SS_VBUS_STAT_MASK; /* impossible state */
 
