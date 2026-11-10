@@ -717,6 +717,8 @@
 		ti,system-minimum-microvolt = <3400000>;
 		/* B&N's driver: 1012 mA below 16 °C, 1024 mA on the ICHG grid */
 		ti,cold-charge-current-microamp = <1024000>;
+		/* Measured: 1.91-1.95 A from three adapters at IINLIM 3 A */
+		ti,ilim-microamp = <1950000>;
 	};
 };
 
